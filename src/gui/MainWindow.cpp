@@ -11,6 +11,7 @@
 #include <Box.h>
 #include <Button.h>
 #include <Font.h>
+#include <GroupLayout.h>
 #include <LayoutBuilder.h>
 #include <ListItem.h>
 #include <ListView.h>
@@ -22,8 +23,10 @@
 #include <Roster.h>
 #include <ScrollView.h>
 #include <StringView.h>
+#include <TabView.h>
+#include <View.h>
 
-#include "StatusIndicator.h"
+#include "HeaderView.h"
 #include "VPNProfile.h"
 #include "VPNProtocol.h"
 #include "VPNStats.h"
@@ -34,27 +37,29 @@ static const uint32 kMsgPrimaryAction	= 'gAct';
 static const uint32 kMsgConnectAction	= 'gCon';
 static const uint32 kMsgDisconnectAction = 'gDis';
 
-// The single semantic accent, one color per state (see docs/GUI.md).
-static const rgb_color kColorIdle		= { 0x7f, 0x7f, 0x7f, 0xff };
-static const rgb_color kColorProgress	= { 0xe0, 0xa0, 0x30, 0xff };
-static const rgb_color kColorConnected	= { 0x3d, 0xa3, 0x5d, 0xff };
-static const rgb_color kColorError		= { 0xc8, 0x46, 0x3c, 0xff };
+// Demo profile values, used until profile editing/import lands.
+static const char* const kDemoProfileName	= "Demo Profile";
+static const char* const kDemoServerHost	= "vpn.example.com";
+static const uint16 kDemoServerPort			= 1194;
+static const char* const kDemoBackendName	= "OpenVPN";
 
 
 MainWindow::MainWindow()
 	:
-	BWindow(BRect(100, 100, 660, 470), "Sotoportego", B_TITLED_WINDOW,
+	BWindow(BRect(100, 100, 720, 560), "Sotoportego", B_TITLED_WINDOW,
 		B_AUTO_UPDATE_SIZE_LIMITS | B_QUIT_ON_WINDOW_CLOSE),
 	fServer(),
 	fState(VPN_STATE_DISCONNECTED),
-	fIndicator(NULL),
-	fStatusLabel(NULL),
+	fHeader(NULL),
 	fServerLabel(NULL),
+	fBackendLabel(NULL),
 	fSinceValue(NULL),
 	fDownValue(NULL),
 	fUpValue(NULL),
 	fProfileList(NULL),
-	fActionButton(NULL)
+	fEventLog(NULL),
+	fActionButton(NULL),
+	fStatusBar(NULL)
 {
 	_BuildLayout();
 	_UpdateForState(VPN_STATE_DISCONNECTED, NULL);
@@ -81,17 +86,52 @@ MainWindow::_BuildLayout()
 		new BMessage(kMsgDisconnectAction)));
 	menuBar->AddItem(connectionMenu);
 
-	// --- Left: profiles -------------------------------------------------
+	fHeader = new HeaderView("header");
+
+	BTabView* tabs = new BTabView("tabs", B_WIDTH_FROM_LABEL);
+	tabs->AddTab(_BuildConnectionTab());
+	tabs->AddTab(_BuildStatisticsTab());
+	tabs->TabAt(0)->SetLabel("Connection");
+	tabs->TabAt(1)->SetLabel("Statistics");
+
+	fStatusBar = new BStringView("statusBar", "Disconnected");
+	BFont smallFont(be_plain_font);
+	smallFont.SetSize(smallFont.Size() * 0.9f);
+	fStatusBar->SetFont(&smallFont);
+
+	BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
+		.Add(menuBar)
+		.Add(fHeader)
+		.AddGroup(B_VERTICAL, B_USE_DEFAULT_SPACING)
+			.SetInsets(B_USE_WINDOW_INSETS, B_USE_HALF_ITEM_SPACING,
+				B_USE_WINDOW_INSETS, B_USE_HALF_ITEM_SPACING)
+			.Add(tabs)
+		.End()
+		.AddGroup(B_HORIZONTAL, 0)
+			.SetInsets(B_USE_WINDOW_INSETS, 0,
+				B_USE_WINDOW_INSETS, B_USE_HALF_ITEM_SPACING)
+			.Add(fStatusBar)
+			.AddGlue()
+		.End();
+}
+
+
+BView*
+MainWindow::_BuildConnectionTab()
+{
+	BView* tab = new BView("connectionTab", B_WILL_DRAW);
+	tab->SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
+
+	// --- Left column: profile list -----------------------------------------
 	BBox* profilesBox = new BBox("profilesBox");
 	profilesBox->SetLabel("Profiles");
 
 	fProfileList = new BListView("profileList");
-	fProfileList->AddItem(new BStringItem("Demo Profile"));
+	fProfileList->AddItem(new BStringItem(kDemoProfileName));
 	fProfileList->Select(0);
 	BScrollView* listScroll = new BScrollView("profileScroll", fProfileList,
 		0, false, true);
 
-	// Add/remove are placeholders until profile management lands.
 	BButton* addButton = new BButton("addProfile", "+", NULL);
 	BButton* removeButton = new BButton("removeProfile", "\xe2\x80\x93", NULL);
 	addButton->SetEnabled(false);
@@ -107,21 +147,66 @@ MainWindow::_BuildLayout()
 			.AddGlue()
 		.End();
 
-	// --- Right: status + session + action -------------------------------
-	fIndicator = new StatusIndicator("indicator");
+	// --- Right column: server details + action -----------------------------
+	BBox* detailsBox = new BBox("detailsBox");
+	detailsBox->SetLabel("Server");
 
-	fStatusLabel = new BStringView("statusLabel", "Disconnected");
+	char serverBuf[128];
+	snprintf(serverBuf, sizeof(serverBuf), "%s:%u", kDemoServerHost,
+		(unsigned)kDemoServerPort);
+	fServerLabel = new BStringView("serverLabel", serverBuf);
 	BFont bigFont(be_bold_font);
-	bigFont.SetSize(bigFont.Size() * 1.6f);
-	fStatusLabel->SetFont(&bigFont);
+	bigFont.SetSize(bigFont.Size() * 1.2f);
+	fServerLabel->SetFont(&bigFont);
 
-	fServerLabel = new BStringView("serverLabel", "\xe2\x80\x94");
+	fBackendLabel = new BStringView("backendLabel", kDemoBackendName);
 
+	BLayoutBuilder::Group<>(detailsBox, B_VERTICAL, B_USE_SMALL_SPACING)
+		.SetInsets(B_USE_DEFAULT_SPACING, B_USE_BIG_INSETS,
+			B_USE_DEFAULT_SPACING, B_USE_DEFAULT_SPACING)
+		.Add(new BStringView("serverCaption", "Host"))
+		.Add(fServerLabel)
+		.Add(new BStringView("backendCaption", "Backend"))
+		.Add(fBackendLabel)
+		.AddGlue();
+
+	fActionButton = new BButton("actionButton", "Connect",
+		new BMessage(kMsgPrimaryAction));
+	fActionButton->MakeDefault(true);
+
+	BLayoutBuilder::Group<>(tab, B_VERTICAL, B_USE_DEFAULT_SPACING)
+		.SetInsets(B_USE_DEFAULT_SPACING)
+		.AddGroup(B_HORIZONTAL, B_USE_DEFAULT_SPACING)
+			.Add(profilesBox, 0.40f)
+			.Add(detailsBox, 0.60f)
+		.End()
+		.AddGroup(B_HORIZONTAL, 0)
+			.AddGlue()
+			.Add(fActionButton)
+		.End();
+
+	return tab;
+}
+
+
+BView*
+MainWindow::_BuildStatisticsTab()
+{
+	BView* tab = new BView("statisticsTab", B_WILL_DRAW);
+	tab->SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
+
+	// --- Session summary (left) --------------------------------------------
 	BBox* sessionBox = new BBox("sessionBox");
 	sessionBox->SetLabel("Session");
+
 	fSinceValue = new BStringView("sinceValue", "\xe2\x80\x94");
 	fDownValue = new BStringView("downValue", "0 B");
 	fUpValue = new BStringView("upValue", "0 B");
+
+	BFont monoFont(be_fixed_font);
+	fSinceValue->SetFont(&monoFont);
+	fDownValue->SetFont(&monoFont);
+	fUpValue->SetFont(&monoFont);
 
 	BLayoutBuilder::Grid<>(sessionBox, B_USE_DEFAULT_SPACING,
 			B_USE_SMALL_SPACING)
@@ -134,32 +219,26 @@ MainWindow::_BuildLayout()
 		.Add(new BStringView("upLabel", "Upload"), 0, 2)
 		.Add(fUpValue, 1, 2);
 
-	fActionButton = new BButton("actionButton", "Connect",
-		new BMessage(kMsgPrimaryAction));
-	fActionButton->MakeDefault(true);
+	// --- Event log (right) -------------------------------------------------
+	BBox* eventsBox = new BBox("eventsBox");
+	eventsBox->SetLabel("Events");
 
-	BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
-		.Add(menuBar)
-		.AddGroup(B_HORIZONTAL, B_USE_DEFAULT_SPACING)
-			.SetInsets(B_USE_WINDOW_SPACING)
-			.Add(profilesBox, 0.38f)
-			.AddGroup(B_VERTICAL, B_USE_DEFAULT_SPACING, 0.62f)
-				.AddGroup(B_HORIZONTAL, B_USE_DEFAULT_SPACING)
-					.Add(fIndicator)
-					.AddGroup(B_VERTICAL, 0)
-						.Add(fStatusLabel)
-						.Add(fServerLabel)
-					.End()
-					.AddGlue()
-				.End()
-				.Add(sessionBox)
-				.AddGlue()
-				.AddGroup(B_HORIZONTAL, 0)
-					.AddGlue()
-					.Add(fActionButton)
-				.End()
-			.End()
-		.End();
+	fEventLog = new BListView("eventLog");
+	fEventLog->SetFont(&monoFont);
+	BScrollView* eventScroll = new BScrollView("eventScroll", fEventLog,
+		0, false, true);
+
+	BLayoutBuilder::Group<>(eventsBox, B_VERTICAL, B_USE_SMALL_SPACING)
+		.SetInsets(B_USE_DEFAULT_SPACING, B_USE_BIG_INSETS,
+			B_USE_DEFAULT_SPACING, B_USE_DEFAULT_SPACING)
+		.Add(eventScroll);
+
+	BLayoutBuilder::Group<>(tab, B_HORIZONTAL, B_USE_DEFAULT_SPACING)
+		.SetInsets(B_USE_DEFAULT_SPACING)
+		.Add(sessionBox, 0.40f)
+		.Add(eventsBox, 0.60f);
+
+	return tab;
 }
 
 
@@ -248,9 +327,9 @@ MainWindow::_SendConnect()
 	// .ovpn parsing land; for now it mirrors the CLI's demo profile.
 	VPNProfile profile;
 	profile.fBackendType = VPN_BACKEND_OPENVPN;
-	profile.fName = "Demo Profile";
-	profile.fServer = "vpn.example.com";
-	profile.fPort = 1194;
+	profile.fName = kDemoProfileName;
+	profile.fServer = kDemoServerHost;
+	profile.fPort = kDemoServerPort;
 	profile.fUsername = "demo";
 
 	BMessage archive;
@@ -278,60 +357,46 @@ MainWindow::_SendDisconnect()
 void
 MainWindow::_UpdateForState(VPNState state, const char* detail)
 {
+	VPNState previous = fState;
 	fState = state;
 
-	rgb_color accent = kColorIdle;
-	const char* action = "Connect";
-	bool actionEnabled = true;
+	const char* action = (state == VPN_STATE_DISCONNECTED
+		|| state == VPN_STATE_ERROR) ? "Connect" : "Disconnect";
 
-	switch (state) {
-		case VPN_STATE_CONNECTING:
-		case VPN_STATE_AUTHENTICATING:
-			accent = kColorProgress;
-			action = "Disconnect";
-			break;
-		case VPN_STATE_CONNECTED:
-			accent = kColorConnected;
-			action = "Disconnect";
-			break;
-		case VPN_STATE_RECONNECTING:
-			accent = kColorProgress;
-			action = "Disconnect";
-			break;
-		case VPN_STATE_ERROR:
-			accent = kColorError;
-			action = "Connect";
-			break;
-		case VPN_STATE_DISCONNECTED:
-		default:
-			accent = kColorIdle;
-			action = "Connect";
-			break;
-	}
+	if (fHeader != NULL) {
+		fHeader->SetState(state);
 
-	if (fIndicator != NULL)
-		fIndicator->SetColor(accent);
-
-	if (fStatusLabel != NULL) {
-		BString label(vpn_state_name(state));
+		BString subtitle(vpn_state_name(state));
 		if (detail != NULL && detail[0] != '\0') {
-			label << " \xe2\x80\x94 ";
-			label << detail;
+			subtitle << " \xc2\xb7 ";
+			subtitle << detail;
+		} else if (state != VPN_STATE_DISCONNECTED) {
+			char serverBuf[128];
+			snprintf(serverBuf, sizeof(serverBuf), "%s:%u",
+				kDemoServerHost, (unsigned)kDemoServerPort);
+			subtitle << " \xc2\xb7 ";
+			subtitle << serverBuf;
 		}
-		fStatusLabel->SetText(label.String());
+		fHeader->SetSubtitle(subtitle.String());
 	}
 
-	if (fServerLabel != NULL) {
-		// Show the server only when there is an active session.
-		if (state == VPN_STATE_DISCONNECTED)
-			fServerLabel->SetText("\xe2\x80\x94");
-		else
-			fServerLabel->SetText("vpn.example.com:1194");
-	}
-
-	if (fActionButton != NULL) {
+	if (fActionButton != NULL)
 		fActionButton->SetLabel(action);
-		fActionButton->SetEnabled(actionEnabled);
+
+	if (fStatusBar != NULL) {
+		BString status;
+		status << "1 profile \xc2\xb7 ";
+		status << vpn_state_name(state);
+		fStatusBar->SetText(status.String());
+	}
+
+	if (previous != state) {
+		BString line(vpn_state_name(state));
+		if (detail != NULL && detail[0] != '\0') {
+			line << " \xe2\x80\x94 ";
+			line << detail;
+		}
+		_AppendEvent(line.String());
 	}
 }
 
@@ -359,6 +424,29 @@ MainWindow::_ApplyStats(const BMessage* message)
 			fSinceValue->SetText("\xe2\x80\x94");
 		}
 	}
+}
+
+
+void
+MainWindow::_AppendEvent(const char* text)
+{
+	if (fEventLog == NULL || text == NULL)
+		return;
+
+	char timeBuf[16];
+	time_t now = time(NULL);
+	struct tm local;
+	localtime_r(&now, &local);
+	strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", &local);
+
+	BString line;
+	line << timeBuf << "  " << text;
+	fEventLog->AddItem(new BStringItem(line.String()));
+	fEventLog->ScrollToSelection();
+
+	int32 count = fEventLog->CountItems();
+	if (count > 0)
+		fEventLog->Select(count - 1);
 }
 
 

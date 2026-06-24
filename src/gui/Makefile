@@ -21,7 +21,7 @@ SRCS = \
 	main.cpp \
 	SotoportegoApp.cpp \
 	MainWindow.cpp \
-	StatusIndicator.cpp \
+	HeaderView.cpp \
 	../common/VPNProfile.cpp \
 	../common/VPNState.cpp \
 	../common/VPNStats.cpp
@@ -39,8 +39,9 @@ LIBS = be $(STDCPPLIBS)
 # Additional paths to directories following the standard libXXX.so layout.
 LIBPATHS =
 
-# Additional paths to look for system headers.
-SYSTEM_INCLUDE_PATHS =
+# Additional paths to look for system headers. BAboutWindow lives under the
+# private interface headers (its implementation is in libbe).
+SYSTEM_INCLUDE_PATHS = /system/develop/headers/private/interface
 
 # Additional paths to look for local headers.
 LOCAL_INCLUDE_PATHS = ../common

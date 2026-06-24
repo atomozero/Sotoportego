@@ -4,8 +4,10 @@
  */
 #include "SotoportegoApp.h"
 
-#include <Alert.h>
+#include <AboutWindow.h>
+#include <Bitmap.h>
 
+#include "HeaderView.h"
 #include "MainWindow.h"
 #include "VPNProtocol.h"
 
@@ -29,11 +31,24 @@ SotoportegoApp::ReadyToRun()
 void
 SotoportegoApp::AboutRequested()
 {
-	BAlert* alert = new BAlert("About Sotoportego",
-		"Sotoportego\n\n"
-		"A native VPN client for Haiku.\n"
-		"Milestone 1 skeleton \xe2\x80\x94 the connection is still a stub.",
-		"Close");
-	alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
-	alert->Go();
+	BAboutWindow* about = new BAboutWindow("Sotoportego", kGUISignature);
+
+	BBitmap* icon = HeaderView::MakeLogoBitmap(64);
+	if (icon != NULL)
+		about->SetIcon(icon);
+
+	about->SetVersion("0.1 (development)");
+	about->AddCopyright(2026, "atomozero");
+	about->AddDescription(
+		"Sotoportego is a native VPN client for Haiku. The daemon owns the "
+		"VPN lifecycle and is the single source of truth; the GUI, CLI and "
+		"the upcoming Deskbar replicant are thin front-ends that subscribe "
+		"to its broadcasts over BMessage.\n\n"
+		"Milestone 1 skeleton \xe2\x80\x94 the connection is still a stub.");
+	const char* authors[] = {
+		"atomozero",
+		NULL
+	};
+	about->AddAuthors(authors);
+	about->Show();
 }
