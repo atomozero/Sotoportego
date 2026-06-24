@@ -1,0 +1,13 @@
+resource app_signature "application/x-vnd.VePro-SotoportegoServer";
+
+resource app_version {
+	major		= 0,
+	middle		= 1,
+	minor		= 0,
+	variety		= B_APPV_DEVELOPMENT,
+	internal	= 0,
+	short_info	= "Sotoportego Server",
+	long_info	= "Sotoportego VPN daemon for Haiku."
+};
+
+resource app_flags B_SINGLE_LAUNCH;
