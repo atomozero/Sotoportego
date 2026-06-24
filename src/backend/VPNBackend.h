@@ -8,6 +8,7 @@
 
 #include <Handler.h>
 #include <Messenger.h>
+#include <String.h>
 
 #include "VPNProfile.h"
 #include "VPNState.h"
@@ -42,6 +43,17 @@ public:
 
 	virtual	VPNState			State() const = 0;
 	virtual	VPNStats			Stats() const = 0;
+
+	// Tunnel addresses, valid once the session reaches CONNECTED. The
+	// defaults are empty strings; backends that know better override them.
+	virtual	BString				LocalIP() const { return BString(); }
+	virtual	BString				RemoteIP() const { return BString(); }
+
+	// Provide transient credentials for the next connection attempt; the
+	// default is a no-op for backends that don't need them. Plaintext and
+	// not persisted.
+	virtual	void				SetCredentials(const BString& /*user*/,
+									const BString& /*pass*/) {}
 
 	// A short, stable identifier for this backend ("OpenVPN", ...). Distinct
 	// from BHandler::Name().

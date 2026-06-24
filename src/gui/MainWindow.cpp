@@ -30,6 +30,7 @@
 #include <TabView.h>
 #include <View.h>
 
+#include "CredentialsWindow.h"
 #include "HeaderView.h"
 #include "OpenVPNConfigParser.h"
 #include "VPNProfile.h"
@@ -38,13 +39,15 @@
 
 
 // GUI-private message codes.
-static const uint32 kMsgPrimaryAction	= 'gAct';
-static const uint32 kMsgConnectAction	= 'gCon';
-static const uint32 kMsgDisconnectAction = 'gDis';
-static const uint32 kMsgAddProfile		= 'gAdd';
-static const uint32 kMsgRemoveProfile	= 'gRem';
-static const uint32 kMsgProfileSelected	= 'gSel';
-static const uint32 kMsgImportRefs		= 'gImp';
+static const uint32 kMsgPrimaryAction		= 'gAct';
+static const uint32 kMsgConnectAction		= 'gCon';
+static const uint32 kMsgDisconnectAction	= 'gDis';
+static const uint32 kMsgAddProfile			= 'gAdd';
+static const uint32 kMsgRemoveProfile		= 'gRem';
+static const uint32 kMsgProfileSelected		= 'gSel';
+static const uint32 kMsgImportRefs			= 'gImp';
+static const uint32 kMsgCredentialsOK		= 'gCrO';
+static const uint32 kMsgCredentialsCancel	= 'gCrC';
 
 static const char* const kBackendName	= "OpenVPN";
 
@@ -59,6 +62,7 @@ MainWindow::MainWindow()
 	fServerLabel(NULL),
 	fBackendLabel(NULL),
 	fProtocolLabel(NULL),
+	fTunnelIPValue(NULL),
 	fSinceValue(NULL),
 	fDownValue(NULL),
 	fUpValue(NULL),
@@ -179,6 +183,8 @@ MainWindow::_BuildConnectionTab()
 	fBackendLabel->SetFont(be_bold_font);
 	fProtocolLabel = new BStringView("protocolLabel", "\xe2\x80\x94");
 	fProtocolLabel->SetFont(be_bold_font);
+	fTunnelIPValue = new BStringView("tunnelIPValue", "\xe2\x80\x94");
+	fTunnelIPValue->SetFont(be_bold_font);
 
 	BLayoutBuilder::Grid<>(detailsBox, B_USE_DEFAULT_SPACING,
 			B_USE_SMALL_SPACING)
@@ -189,7 +195,9 @@ MainWindow::_BuildConnectionTab()
 		.Add(new BStringView("backendCaption", "Backend:"), 0, 1)
 		.Add(fBackendLabel, 1, 1)
 		.Add(new BStringView("protocolCaption", "Protocol:"), 0, 2)
-		.Add(fProtocolLabel, 1, 2);
+		.Add(fProtocolLabel, 1, 2)
+		.Add(new BStringView("tunnelIPCaption", "Tunnel IP:"), 0, 3)
+		.Add(fTunnelIPValue, 1, 3);
 
 	fActionButton = new BButton("actionButton", "Connect",
 		new BMessage(kMsgPrimaryAction));
@@ -271,16 +279,30 @@ MainWindow::MessageReceived(BMessage* message)
 		case kMsgPrimaryAction:
 			// The primary button means connect when idle, disconnect otherwise.
 			if (fState == VPN_STATE_DISCONNECTED || fState == VPN_STATE_ERROR)
-				_SendConnect();
+				_BeginConnectFlow();
 			else
 				_SendDisconnect();
 			break;
 
 		case kMsgConnectAction:
-			_SendConnect();
+			_BeginConnectFlow();
 			break;
 		case kMsgDisconnectAction:
 			_SendDisconnect();
+			break;
+
+		case kMsgCredentialsOK:
+		{
+			const char* user = "";
+			const char* pass = "";
+			message->FindString(kFieldUsername, &user);
+			message->FindString(kFieldPassword, &pass);
+			_SendConnectWith(user, pass);
+			break;
+		}
+		case kMsgCredentialsCancel:
+			// User dismissed the dialog; nothing to do, the connect attempt
+			// was never sent.
 			break;
 
 		case kMsgAddProfile:
@@ -321,6 +343,15 @@ MainWindow::MessageReceived(BMessage* message)
 			const char* detail = NULL;
 			if (message->FindString(kFieldDetail, &detail) != B_OK)
 				detail = NULL;
+			const char* localIP = NULL;
+			if (message->FindString(kFieldLocalIP, &localIP) == B_OK
+					&& localIP != NULL && fTunnelIPValue != NULL) {
+				fTunnelIPValue->SetText(localIP[0] != '\0'
+					? localIP : "\xe2\x80\x94");
+			} else if (fTunnelIPValue != NULL
+					&& (VPNState)state == VPN_STATE_DISCONNECTED) {
+				fTunnelIPValue->SetText("\xe2\x80\x94");
+			}
 			_UpdateForState((VPNState)state, detail);
 			_ApplyStats(message);
 			break;
@@ -367,7 +398,7 @@ MainWindow::_EnsureSubscribed()
 
 
 void
-MainWindow::_SendConnect()
+MainWindow::_BeginConnectFlow()
 {
 	if (!fServer.IsValid())
 		return;
@@ -381,12 +412,35 @@ MainWindow::_SendConnect()
 		return;
 	}
 
+	// Always prompt for credentials -- we can't reliably know up-front
+	// whether the .ovpn file requires interactive auth, and an empty
+	// prompt is cheap to dismiss for cert-only configs.
+	CredentialsWindow* prompt = new CredentialsWindow(this, BMessenger(this),
+		kMsgCredentialsOK, kMsgCredentialsCancel,
+		selected->fName.String(), selected->fUsername);
+	prompt->Show();
+}
+
+
+void
+MainWindow::_SendConnectWith(const char* username, const char* password)
+{
+	if (!fServer.IsValid())
+		return;
+	const VPNProfile* selected = _SelectedProfile();
+	if (selected == NULL)
+		return;
+
 	BMessage archive;
 	selected->Archive(&archive);
 
 	BMessage connect(kMsgConnect);
 	connect.AddMessenger(kFieldClient, BMessenger(this));
 	connect.AddMessage(kFieldProfile, &archive);
+	if (username != NULL && username[0] != '\0')
+		connect.AddString(kFieldUsername, username);
+	if (password != NULL && password[0] != '\0')
+		connect.AddString(kFieldPassword, password);
 	fServer.SendMessage(&connect);
 }
 

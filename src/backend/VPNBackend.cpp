@@ -45,6 +45,14 @@ VPNBackend::NotifyStateChanged(VPNState state, const char* detail)
 	// needs to render the connection.
 	Stats().Archive(&message);
 
+	// Tunnel addresses (empty until CONNECTED on backends that track them).
+	BString localIP = LocalIP();
+	if (localIP.Length() > 0)
+		message.AddString(kFieldLocalIP, localIP);
+	BString remoteIP = RemoteIP();
+	if (remoteIP.Length() > 0)
+		message.AddString(kFieldRemoteIP, remoteIP);
+
 	fObserver.SendMessage(&message);
 }
 

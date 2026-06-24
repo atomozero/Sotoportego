@@ -59,6 +59,12 @@ private:
 			void				_DeleteSelectedProfile();
 			const VPNProfile*	_SelectedProfile() const;
 
+	// Connect flow: prompt for credentials if the profile needs them, then
+	// dispatch Connect with whatever the user provided.
+			void				_BeginConnectFlow();
+			void				_SendConnectWith(const char* username,
+									const char* password);
+
 	static	BString				_FormatBytes(int64 bytes);
 
 			BMessenger			fServer;
@@ -68,6 +74,7 @@ private:
 			BStringView*		fServerLabel;
 			BStringView*		fBackendLabel;
 			BStringView*		fProtocolLabel;
+			BStringView*		fTunnelIPValue;
 			BStringView*		fSinceValue;
 			BStringView*		fDownValue;
 			BStringView*		fUpValue;

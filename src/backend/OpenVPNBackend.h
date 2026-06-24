@@ -6,23 +6,28 @@
 #define OPENVPN_BACKEND_H
 
 
+#include <sys/types.h>
+
+#include <OS.h>
+#include <String.h>
+
 #include "OpenVPNManagement.h"
 #include "VPNBackend.h"
 
-class BMessageRunner;
 
-
-// Stub OpenVPN backend for Milestone 1.
+// Real OpenVPN backend.
 //
-// This does NOT talk to OpenVPN. It exists to exercise the IPC + backend seam
-// end to end: on Connect() it walks a scripted state machine driven by a
-// BMessageRunner timer (Connecting -> Authenticating -> Connected, then fake
-// throughput ticks), emitting the same events a real backend would. On
-// Disconnect() it unwinds to Disconnected.
+// On Connect() it spawns the `openvpn` binary with `--management 127.0.0.1
+// <port> --management-hold --management-query-passwords --config <ovpn>`,
+// connects a TCP socket to that management port, and starts a reader thread
+// that streams bytes through OpenVPNManagement::Feed(). Every parsed event is
+// posted back to the daemon's looper via a private BMessage so all backend
+// state mutations happen on the looper thread (no locks).
 //
-// TODO(milestone-2): replace the timer-driven script with a real connection
-// managed through the OpenVPN management interface (spawn the openvpn binary,
-// drive it over its management socket, parse state/bytecount events).
+// On Disconnect() it asks openvpn to terminate via `signal SIGTERM` on the
+// management socket; the child's exit closes the socket, the reader sees
+// EOF, the looper reaps the team and the state machine settles on
+// Disconnected.
 class OpenVPNBackend : public VPNBackend {
 public:
 								OpenVPNBackend();
@@ -33,30 +38,46 @@ public:
 	virtual	VPNState			State() const;
 	virtual	VPNStats			Stats() const;
 	virtual	const char*			BackendName() const;
+	virtual	BString				LocalIP() const;
+	virtual	BString				RemoteIP() const;
+	virtual	void				SetCredentials(const BString& user,
+									const BString& pass);
 
 	virtual	void				MessageReceived(BMessage* message);
 
 private:
-	// The single integration point: every connection event -- whether parsed
-	// from the real management socket or synthesized by the stub -- is mapped
-	// to state/stats here. The real reader will just call this in a loop over
-	// fManagement.Feed(bytes).
+	// --- lifecycle -----------------------------------------------------
+			bool				_SpawnOpenVPN(const VPNProfile& profile);
+			bool				_ConnectManagementSocket();
+			void				_StartReader();
+			void				_Cleanup(bool wait);
+			int32				_RunReaderLoop();
+	static	int32				_ReaderEntry(void* self);
+
+	// --- protocol ------------------------------------------------------
+			void				_SendCommand(const char* line);
+			void				_PostEvent(const OpenVPNEvent& event);
 			void				_HandleManagementEvent(
 									const OpenVPNEvent& event);
 
 			void				_SetState(VPNState state,
 									const char* detail = NULL);
-			void				_Tick();
-			void				_StartTimer(bigtime_t interval);
-			void				_StopTimer();
 
 			VPNState			fState;
 			VPNStats			fStats;
 			VPNProfile			fProfile;
-			BMessageRunner*		fTimer;
-	// Parses bytes from the management socket into OpenVPNEvents. Unused by the
-	// stub scenario, but wired in ready for the real transport.
+			BString				fLocalIP;
+			BString				fRemoteIP;
+			BString				fAuthUsername;
+			BString				fAuthPassword;
 			OpenVPNManagement	fManagement;
+
+	// Live process / connection. Owned by Connect()/_Cleanup().
+			pid_t				fPid;			// openvpn pid, -1 when none
+			int					fSocket;		// management TCP fd, -1 when none
+			int					fMgmtPort;		// chosen at spawn time
+			thread_id			fReader;		// -1 when no thread alive
+			bool				fStopRequested;	// true after Disconnect()
 };
 
 

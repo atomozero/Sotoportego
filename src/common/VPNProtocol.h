@@ -85,6 +85,18 @@ static const char* const kFieldBytesIn			= "soto:bytesIn";
 static const char* const kFieldBytesOut			= "soto:bytesOut";
 static const char* const kFieldConnectedSince	= "soto:connectedSince";
 
+// Tunnel addresses, populated once a session is up.
+// kFieldLocalIP  = the IP the VPN server assigned to us inside the tunnel.
+// kFieldRemoteIP = the IP/hostname of the VPN server itself (as seen on the
+// underlying transport).
+static const char* const kFieldLocalIP			= "soto:localIP";
+static const char* const kFieldRemoteIP			= "soto:remoteIP";
+
+// Transient connect-time credentials. Plaintext; never persisted by the
+// daemon. The GUI strips them from the message after delivery.
+static const char* const kFieldUsername			= "soto:auth:username";
+static const char* const kFieldPassword			= "soto:auth:password";
+
 // VPNProfile fields:
 static const char* const kFieldProfileName		= "soto:profile:name";
 static const char* const kFieldProfileServer	= "soto:profile:server";

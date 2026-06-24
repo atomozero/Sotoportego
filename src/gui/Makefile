@@ -22,6 +22,7 @@ SRCS = \
 	SotoportegoApp.cpp \
 	MainWindow.cpp \
 	HeaderView.cpp \
+	CredentialsWindow.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/VPNProfile.cpp \
 	../common/VPNState.cpp \

@@ -34,11 +34,11 @@ SRCS = \
 RDEFS = Sotoportego_server.rdef
 RSRCS =
 
-# Libraries to link against. libbe provides BApplication / BMessage / etc.
-# $(STDCPPLIBS) pulls in libstdc++/libsupc++ — the makefile-engine links with
-# `cc`, which does not add the C++ runtime automatically.
-# Network libraries are added in a later milestone, when real routing/DNS land.
-LIBS = be $(STDCPPLIBS)
+# Libraries to link against. libbe provides BApplication / BMessage / etc.;
+# libnetwork carries the POSIX socket API the OpenVPN backend uses to talk to
+# the management interface. $(STDCPPLIBS) pulls in libstdc++/libsupc++ — the
+# makefile-engine links with `cc`, which does not add the C++ runtime itself.
+LIBS = be network $(STDCPPLIBS)
 
 # Additional paths to directories following the standard libXXX.so layout.
 LIBPATHS =

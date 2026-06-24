@@ -100,6 +100,18 @@ SotoportegoServer::_HandleConnect(BMessage* message)
 	if (message->FindMessage(kFieldProfile, &archive) == B_OK)
 		profile.Unarchive(archive);
 
+	// Forward any transient credentials to the backend before kicking the
+	// connection off. These never get persisted; the backend wipes them in
+	// Cleanup() when the session ends.
+	const char* username = NULL;
+	const char* password = NULL;
+	if (message->FindString(kFieldUsername, &username) != B_OK)
+		username = "";
+	if (message->FindString(kFieldPassword, &password) != B_OK)
+		password = "";
+	if (username[0] != '\0' || password[0] != '\0')
+		fBackend->SetCredentials(BString(username), BString(password));
+
 	// A connect implies the sender wants updates.
 	_HandleSubscribe(message);
 
@@ -202,6 +214,13 @@ SotoportegoServer::_FillStatus(BMessage* message)
 	message->AddInt32(kFieldState, (int32)fBackend->State());
 	message->AddString(kFieldBackend, fBackend->BackendName());
 	fBackend->Stats().Archive(message);
+
+	BString localIP = fBackend->LocalIP();
+	if (localIP.Length() > 0)
+		message->AddString(kFieldLocalIP, localIP);
+	BString remoteIP = fBackend->RemoteIP();
+	if (remoteIP.Length() > 0)
+		message->AddString(kFieldRemoteIP, remoteIP);
 }
 
 
