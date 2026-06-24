@@ -510,6 +510,21 @@ MainWindow::_UpdateForState(VPNState state, const char* detail)
 			line << detail;
 		}
 		_AppendEvent(line.String());
+
+		// Surface terminal errors front-and-centre: the slate header is
+		// easy to glance past when openvpn fails after a couple of state
+		// flips.
+		if (state == VPN_STATE_ERROR && previous != VPN_STATE_ERROR) {
+			BString body("The VPN connection failed.");
+			if (detail != NULL && detail[0] != '\0') {
+				body << "\n\n";
+				body << detail;
+			}
+			BAlert* alert = new BAlert("connectionError", body.String(),
+				"OK", NULL, NULL, B_WIDTH_AS_USUAL, B_STOP_ALERT);
+			alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+			alert->Go(NULL);
+		}
 	}
 }
 

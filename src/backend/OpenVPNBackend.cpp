@@ -488,6 +488,14 @@ OpenVPNBackend::_HandleManagementEvent(const OpenVPNEvent& event)
 {
 	switch (event.type) {
 		case OPENVPN_EVENT_STATE:
+			// openvpn sends >STATE:EXITING just before it dies; if we have
+			// already recorded a more specific error (auth-failed, fatal),
+			// keep that as the visible state instead of overwriting it with
+			// a generic Disconnected.
+			if (event.mappedState == VPN_STATE_DISCONNECTED
+					&& fState == VPN_STATE_ERROR) {
+				break;
+			}
 			if (event.mappedState == VPN_STATE_CONNECTED) {
 				fStats.fConnectedSince = time(NULL);
 				if (!event.localIP.empty())
