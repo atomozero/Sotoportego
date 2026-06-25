@@ -528,12 +528,15 @@ OpenVPNBackend::_Cleanup(bool wait)
 	// is already gone.
 	_RemoveRoutes();
 
-	// Drop tun/0 so we don't leave it carrying a stale IP and a default
-	// route after openvpn is gone. openvpn does its own cleanup on a clean
-	// exit, but if it crashes mid-flight the half-configured interface
-	// would steer all subsequent traffic into a black hole.
-	const char* const ifconfigDown[] = { "ifconfig", "tun/0", "down", NULL };
-	run_ifconfig(ifconfigDown);
+	// Tear tun/0 out of the interface list entirely. `ifconfig tun/0 down`
+	// only deactivates it -- the interface stays around with whatever IP
+	// openvpn pushed onto it, and the next Connect would inherit a stale
+	// address. `--delete` removes the interface; the kernel tunnel add-on
+	// republishes it next time we ifconfig it up.
+	const char* const ifconfigDelete[] = {
+		"ifconfig", "--delete", "tun/0", NULL
+	};
+	run_ifconfig(ifconfigDelete);
 
 	fLocalIP = "";
 	fAuthUsername = "";
