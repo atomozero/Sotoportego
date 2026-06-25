@@ -61,10 +61,22 @@ HeaderView::HeaderView(const char* name)
 	:
 	BView(name, B_WILL_DRAW | B_SUPPORTS_LAYOUT | B_FULL_UPDATE_ON_RESIZE),
 	fState(VPN_STATE_DISCONNECTED),
-	fSubtitle("Disconnected")
+	fSubtitle("Disconnected"),
+	fEasterTarget(),
+	fEasterWhat(0),
+	fLastTileClick(0),
+	fTileClickStreak(0)
 {
 	SetViewColor(kHeaderBg);
 	SetLowColor(kHeaderBg);
+}
+
+
+void
+HeaderView::SetEasterEggTarget(const BMessenger& target, uint32 what)
+{
+	fEasterTarget = target;
+	fEasterWhat = what;
 }
 
 
@@ -164,6 +176,37 @@ HeaderView::_DrawLogoTile(BRect rect)
 	float radius = rect.Width() * 0.18f;
 	SetHighColor(kLogoFill);
 	FillRoundRect(rect, radius, radius);
+}
+
+
+void
+HeaderView::MouseDown(BPoint where)
+{
+	// Easter egg: seven taps on the logo tile within three seconds opens
+	// the Vaporetto window. Trip the counter only for clicks that actually
+	// land on the tile so accidental drag-by clicks on the text don't
+	// count.
+	BRect tile(kIconX, kIconY, kIconX + kIconSize - 1,
+		kIconY + kIconSize - 1);
+	if (!tile.Contains(where))
+		return;
+	if (!fEasterTarget.IsValid() || fEasterWhat == 0)
+		return;
+
+	const bigtime_t kStreakWindow = 3 * 1000000;	// 3 seconds
+	const int32 kStreakGoal = 7;
+
+	bigtime_t now = system_time();
+	if (now - fLastTileClick > kStreakWindow)
+		fTileClickStreak = 0;
+	fLastTileClick = now;
+	fTileClickStreak++;
+
+	if (fTileClickStreak >= kStreakGoal) {
+		fTileClickStreak = 0;
+		BMessage trigger(fEasterWhat);
+		fEasterTarget.SendMessage(&trigger);
+	}
 }
 
 

@@ -7,6 +7,7 @@
 
 
 #include <InterfaceDefs.h>
+#include <Messenger.h>
 #include <String.h>
 #include <View.h>
 
@@ -31,6 +32,7 @@ public:
 			void				SetSubtitle(const char* text);
 
 	virtual	void				Draw(BRect updateRect);
+	virtual	void				MouseDown(BPoint where);
 	virtual	BSize				MinSize();
 	virtual	BSize				MaxSize();
 	virtual	BSize				PreferredSize();
@@ -41,12 +43,22 @@ public:
 	// the returned bitmap (may return NULL on failure).
 	static	BBitmap*			MakeLogoBitmap(float size);
 
+	// A messenger that should receive a `wMsg` BMessage when the logo tile
+	// is tapped enough times in a row -- the easter-egg trigger. No-op if
+	// the messenger is invalid.
+			void				SetEasterEggTarget(const BMessenger& target,
+									uint32 what);
+
 private:
 			void				_DrawLogoTile(BRect rect);
 			void				_DrawStatusDot(BRect iconRect);
 
 			VPNState			fState;
 			BString				fSubtitle;
+			BMessenger			fEasterTarget;
+			uint32				fEasterWhat;
+			bigtime_t			fLastTileClick;
+			int32				fTileClickStreak;
 };
 
 

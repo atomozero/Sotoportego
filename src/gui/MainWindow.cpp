@@ -36,6 +36,7 @@
 #include "VPNProfile.h"
 #include "VPNProtocol.h"
 #include "VPNStats.h"
+#include "VaporettoWindow.h"
 
 
 // GUI-private message codes.
@@ -48,6 +49,7 @@ static const uint32 kMsgProfileSelected		= 'gSel';
 static const uint32 kMsgImportRefs			= 'gImp';
 static const uint32 kMsgCredentialsOK		= 'gCrO';
 static const uint32 kMsgCredentialsCancel	= 'gCrC';
+static const uint32 kMsgVaporetto			= 'gVap';
 
 static const char* const kBackendName	= "OpenVPN";
 
@@ -109,6 +111,7 @@ MainWindow::_BuildLayout()
 	menuBar->AddItem(connectionMenu);
 
 	fHeader = new HeaderView("header");
+	fHeader->SetEasterEggTarget(BMessenger(this), kMsgVaporetto);
 
 	BTabView* tabs = new BTabView("tabs", B_WIDTH_FROM_LABEL);
 	tabs->AddTab(_BuildConnectionTab());
@@ -304,6 +307,16 @@ MainWindow::MessageReceived(BMessage* message)
 			// User dismissed the dialog; nothing to do, the connect attempt
 			// was never sent.
 			break;
+
+		case kMsgVaporetto:
+		{
+			// The HeaderView fires this after the user taps the logo seven
+			// times in a row. Open a vaporetto window once per trigger;
+			// dismissing it closes for free thanks to B_QUIT_ON_WINDOW_CLOSE.
+			VaporettoWindow* vw = new VaporettoWindow();
+			vw->Show();
+			break;
+		}
 
 		case kMsgAddProfile:
 			_OpenImportPanel();

@@ -23,6 +23,7 @@ SRCS = \
 	MainWindow.cpp \
 	HeaderView.cpp \
 	CredentialsWindow.cpp \
+	VaporettoWindow.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/VPNProfile.cpp \
 	../common/VPNState.cpp \
