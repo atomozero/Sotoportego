@@ -25,10 +25,10 @@ If Sotoportego saves you time, consider supporting development: [![Buy Me A Coff
   `--management 127.0.0.1 <port> --management-hold`, talks to its
   management socket from a dedicated reader thread, and posts every
   parsed event back to the daemon's looper.
-* **Haiku-specific glue** — brings `tun/0` up before openvpn starts (the
-  Haiku port can't allocate the tun device dynamically) and installs the
-  pushed default route via the in-tunnel peer on `tun/0` so traffic
-  actually flows through the tunnel.
+* **Haiku-specific glue** — scans for the first free `tun/N` slot and
+  brings it up before openvpn starts (the Haiku port can't allocate the
+  tun device dynamically), then installs the pushed default route via
+  the in-tunnel peer so traffic actually flows through the tunnel.
 * **Profile management** — import any `.ovpn` file through a file panel.
   The daemon persists the list at
   `~/config/settings/Sotoportego/profiles` and broadcasts changes to
@@ -80,8 +80,9 @@ If Sotoportego saves you time, consider supporting development: [![Buy Me A Coff
 
 * The kernel **tunnel** network add-on, shipped with Haiku at
   `/system/add-ons/kernel/network/devices/tunnel`. The daemon publishes
-  the actual device with `ifconfig tun/0 up` on every Connect, so no
-  manual setup is required.
+  the actual device with `ifconfig tun/N up` on every Connect (`N`
+  being the first slot free at that moment), so no manual setup is
+  required.
 
 
 ## Build
@@ -124,8 +125,8 @@ The GUI launches the daemon automatically via `be_roster`. From there:
    second or two later; the **Statistics** tab keeps a live event log
    and download/upload counters.
 4. **Disconnect** asks openvpn to terminate via the management socket,
-   removes the routes we installed and deletes `tun/0` from the
-   interface list, so the routing table is left exactly the way it was
+   removes the routes we installed and deletes the `tun/N` interface
+   we brought up, so the routing table is left exactly the way it was
    found.
 
 ### Daemon (manual)
@@ -153,6 +154,35 @@ state and stats update, then disconnects and exits. It's the simplest
 proof that the IPC and backend seams work end to end without the GUI.
 
 
+## Verify the tunnel actually carries traffic
+
+`scripts/verify-tunnel.sh` is a shell check that asserts, in order,
+that the tunnel is up *and* outbound traffic is going through it. Run
+it from another terminal while the GUI shows **Connected**:
+
+```
+./scripts/verify-tunnel.sh
+```
+
+It walks through:
+
+1. A `tun/N` interface exists and has an IPv4 address.
+2. Haiku's `route` table puts the default route on that `tun/N`
+   (matched on `0.0.0.0 0.0.0.0 … tun/N` — Haiku doesn't spell the
+   default route as the word "default").
+3. `https://api.ipify.org` reports an external IP **different** from
+   the local wifi IP — this is the only step that proves outbound
+   HTTPS is being carried by the tunnel rather than leaking onto the
+   physical link.
+4. Prints the routing table so the VPN server's own IP can be
+   eyeballed: it must still leave through the original gateway, not
+   `tun/N`, otherwise the carrier loops through its own tunnel.
+
+The script exits non-zero on the first failure, so re-running it
+after **Disconnect** should fail at step 1: the cleanest way to
+confirm the teardown left the routing table back the way it was.
+
+
 ## Layout
 
 ```
@@ -167,6 +197,8 @@ src/server/    The daemon (a BApplication / BLooper), ProfileStore
 src/cli/       sotoportego_cli — the test client
 src/gui/       Sotoportego — the native GUI client (HeaderView,
                MainWindow, CredentialsWindow, About, brand HVIF)
+scripts/       verify-tunnel.sh — shell check that the tunnel is
+               up *and* actually carrying outbound traffic
 ```
 
 | Binary               | MIME signature                              |
@@ -192,11 +224,12 @@ src/gui/       Sotoportego — the native GUI client (HeaderView,
   hardcode the underlying physical interface in every route command, so
   the pushed `redirect-gateway def1` ends up on wifi/ethernet instead of
   the tunnel. We pass `--route-noexec`, scan `ROUTE_GATEWAY` and
-  `PUSH_REPLY` out of the log stream, and install three routes
-  ourselves (the VPN server pinned to the original gateway, plus two
-  `/1` halves of the default via the tunnel peer on `tun/0`). Both the
-  routes and the `tun/0` interface itself are torn back down on
-  Disconnect.
+  `PUSH_REPLY` out of the log stream, and install three things ourselves
+  once CONNECTED arrives: the VPN server's IP pinned to the original
+  gateway (so the openvpn carrier doesn't loop through its own tunnel),
+  the original default route removed, and a new default route via the
+  tunnel peer on `tun/N`. Both the routes and the `tun/N` interface
+  itself are torn back down on Disconnect.
 * **Notifications go through the tunnel.** The geo-lookup behind the
   Connect notification fires *after* CONNECTED, so the HTTP request to
   ip-api.com travels through `tun/0` and reports the country we now
