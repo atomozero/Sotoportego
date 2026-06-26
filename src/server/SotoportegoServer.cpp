@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <Message.h>
 #include <Notification.h>
@@ -121,6 +122,31 @@ SotoportegoServer::_HandleConnect(BMessage* message)
 	BMessage archive;
 	if (message->FindMessage(kFieldProfile, &archive) == B_OK)
 		profile.Unarchive(archive);
+
+	// Validate the .ovpn path before handing it to the backend. Anyone on
+	// the local box can send us a Connect with an arbitrary `fConfigPath`,
+	// and we hand that path to openvpn via --config. Without these checks
+	// a malicious local app could ask the daemon to launch openvpn with,
+	// say, "/etc/shadow" -- openvpn would echo parse errors that quote the
+	// file contents into our log. So: absolute path, no .. segments, file
+	// must exist and be readable as us.
+	const BString& configPath = profile.fConfigPath;
+	bool pathOk = configPath.Length() > 0 && configPath[0] == '/'
+		&& configPath.FindFirst("..") < 0;
+	if (pathOk && access(configPath.String(), R_OK) != 0)
+		pathOk = false;
+	if (!pathOk) {
+		printf("[server] connect rejected: bad config path '%s'\n",
+			configPath.String());
+		BMessage reply(kMsgStatusUpdate);
+		_FillStatus(&reply);
+		reply.AddString(kFieldDetail,
+			"profile config path is missing, not absolute, or unreadable");
+		BMessenger client = _ClientFrom(message);
+		if (client.IsValid())
+			client.SendMessage(&reply);
+		return;
+	}
 
 	// Forward any transient credentials to the backend before kicking the
 	// connection off. These never get persisted; the backend wipes them in
