@@ -437,8 +437,22 @@ MainWindow::_EnsureSubscribed()
 		snooze(100000);
 	}
 
-	if (!fServer.IsValid())
+	if (!fServer.IsValid()) {
+		// The previous code silently disabled the Connect button and left
+		// the user wondering why nothing worked. Tell them explicitly the
+		// daemon isn't reachable -- usually because sotoportego_server is
+		// not installed in PATH or its application signature can't be
+		// resolved.
+		_AppendEvent("Error \xe2\x80\x94 Sotoportego daemon not reachable");
+		BAlert* alert = new BAlert("daemonOffline",
+			"Could not reach the Sotoportego daemon.\n\n"
+			"Make sure sotoportego_server is on PATH and its application "
+			"signature is registered, then restart Sotoportego.",
+			"OK", NULL, NULL, B_WIDTH_AS_USUAL, B_STOP_ALERT);
+		alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+		alert->Go(NULL);
 		return;
+	}
 
 	BMessage subscribe(kMsgSubscribe);
 	subscribe.AddMessenger(kFieldClient, BMessenger(this));
@@ -709,6 +723,18 @@ MainWindow::_RefreshProfileList()
 	for (int32 i = fProfileList->CountItems() - 1; i >= 0; i--)
 		delete fProfileList->RemoveItem(i);
 
+	// First-run / empty-list onboarding: show a single disabled item that
+	// hints at the next step, rather than an empty box that gives no clue
+	// the "+" button does anything useful.
+	if (fProfiles.empty()) {
+		BStringItem* hint = new BStringItem(
+			"No profiles \xe2\x80\x94 click + to import an .ovpn file.");
+		hint->SetEnabled(false);
+		fProfileList->AddItem(hint);
+		fSelectedName = "";
+		return;
+	}
+
 	int32 newSelection = -1;
 	for (size_t i = 0; i < fProfiles.size(); i++) {
 		fProfileList->AddItem(new BStringItem(fProfiles[i].fName.String()));
@@ -716,15 +742,12 @@ MainWindow::_RefreshProfileList()
 			newSelection = (int32)i;
 	}
 
-	if (newSelection < 0 && !fProfiles.empty()) {
+	if (newSelection < 0) {
 		newSelection = 0;
 		fSelectedName = fProfiles[0].fName;
-	} else if (fProfiles.empty()) {
-		fSelectedName = "";
 	}
 
-	if (newSelection >= 0)
-		fProfileList->Select(newSelection);
+	fProfileList->Select(newSelection);
 }
 
 
@@ -804,6 +827,26 @@ MainWindow::_ImportFile(const entry_ref& ref)
 			"OK");
 		alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
 		alert->Go();
+	}
+
+	// Confirm before silently overwriting an existing profile that happens
+	// to share a name with what we just parsed (vpngate filenames in
+	// particular are very repetitive). The daemon's save path is keyed by
+	// name and would otherwise blow away the previous server / config
+	// without telling the user.
+	for (size_t i = 0; i < fProfiles.size(); i++) {
+		if (fProfiles[i].fName == profile.fName) {
+			BString question;
+			question << "A profile named '" << profile.fName
+				<< "' already exists.\n\nReplace it with the file you just "
+				   "imported?";
+			BAlert* alert = new BAlert("overwriteProfile",
+				question.String(), "Cancel", "Replace");
+			alert->SetShortcut(0, B_ESCAPE);
+			if (alert->Go() != 1)
+				return;
+			break;
+		}
 	}
 
 	// Optimistically select the imported profile once the server echoes the
