@@ -168,6 +168,7 @@ OpenVPNBackend::OpenVPNBackend()
 	fOrigGatewayIface(),
 	fTunPeer(),
 	fInstalledServerIP(),
+	fInstalledTunPeer(),
 	fRoutesInstalled(false),
 	fTunInterface(),
 	fTunNode(),
@@ -1027,7 +1028,15 @@ OpenVPNBackend::_HandleManagementEvent(const OpenVPNEvent& event)
 				// scanned out of the preceding log lines (ROUTE_GATEWAY
 				// and PUSH_REPLY). event.remoteIP is the VPN server's
 				// public IP, the third piece we need.
-				_InstallRoutes(BString(event.remoteIP.c_str()));
+				if (fRoutesInstalled) {
+					// This is a CONNECTED arriving after a soft restart
+					// (ping-restart -> reconnect): the routes are still
+					// in place but they aim at the previous tunnel
+					// peer. Swap just the default route to the new one.
+					_RefreshTunRoute();
+				} else {
+					_InstallRoutes(BString(event.remoteIP.c_str()));
+				}
 			}
 			_SetState(event.mappedState,
 				event.stateDetail.empty() ? NULL : event.stateDetail.c_str());
@@ -1141,11 +1150,19 @@ OpenVPNBackend::_ScanLogLine(const std::string& line)
 	// PUSH_REPLY message also contains commas, which is why we needed the
 	// LOG-parser fix in OpenVPNManagement; the substring search here is
 	// agnostic to surrounding noise.
-	if (fTunPeer.Length() == 0) {
+	//
+	// We update on EVERY PUSH_REPLY, not just the first one: when
+	// openvpn does a soft restart (e.g. ping-restart fires) the server
+	// hands out a fresh tunnel peer. Without this update the route
+	// fix-up below would happily keep aiming the default route at the
+	// dead peer from the previous session, the keepalives never reach
+	// the server, ping-restart fires again, and we'd be stuck in a
+	// reconnect loop until something timed out for real.
+	{
 		size_t pos = line.find("route-gateway ");
 		if (pos != std::string::npos) {
 			std::string peer = take_token(line, pos + 14);
-			if (!peer.empty()) {
+			if (!peer.empty() && BString(peer.c_str()) != fTunPeer) {
 				fTunPeer = peer.c_str();
 				printf("[OpenVPN] captured tunnel peer: %s\n",
 					fTunPeer.String());
@@ -1218,6 +1235,7 @@ OpenVPNBackend::_InstallRoutes(const BString& vpnServerIP)
 	run_route(addDefault);
 
 	fInstalledServerIP = vpnServerIP;
+	fInstalledTunPeer = tunPeer;
 	fRoutesInstalled = true;
 
 	// Persist the values _ApplyRestore would need so a crashed daemon can
@@ -1228,15 +1246,58 @@ OpenVPNBackend::_InstallRoutes(const BString& vpnServerIP)
 
 
 void
+OpenVPNBackend::_RefreshTunRoute()
+{
+	// Called from the CONNECTED handler when fRoutesInstalled is already
+	// true (i.e. openvpn did a soft restart). The VPN server's public IP
+	// and the carrier-side default route haven't changed, but the tunnel
+	// peer the server hands out CAN: when that happens the kernel route
+	// still points at the dead peer from the previous session and no
+	// traffic flows -- the symptom the user sees is a perpetual
+	// ping-restart loop.
+	BString newPeer;
+	{
+		BAutolock guard(fScanLock);
+		newPeer = fTunPeer;
+	}
+	if (newPeer.Length() == 0 || newPeer == fInstalledTunPeer)
+		return;
+
+	const char* const dropOld[] = {
+		"route", "delete", fTunInterface.String(), "inet", "0.0.0.0",
+		"gw", fInstalledTunPeer.String(), "netmask", "0.0.0.0", NULL
+	};
+	run_route(dropOld);
+
+	const char* const addNew[] = {
+		"route", "add", fTunInterface.String(), "inet", "0.0.0.0",
+		"gw", newPeer.String(), "netmask", "0.0.0.0", NULL
+	};
+	run_route(addNew);
+
+	printf("[OpenVPN] tunnel peer changed on reconnect: %s -> %s\n",
+		fInstalledTunPeer.String(), newPeer.String());
+	fInstalledTunPeer = newPeer;
+	_WriteSessionFile();
+}
+
+
+void
 OpenVPNBackend::_RemoveRoutes()
 {
 	if (!fRoutesInstalled)
 		return;
-	_ApplyRestore(fTunInterface, fTunPeer, fOrigGateway,
+	// Tear the default route down via the peer we ACTUALLY installed it
+	// for, not via fTunPeer -- on a soft reconnect those two diverge,
+	// and using fTunPeer here would call `route delete ... gw <new>`
+	// which doesn't match the kernel's stored route and leaves the old
+	// default in place.
+	_ApplyRestore(fTunInterface, fInstalledTunPeer, fOrigGateway,
 		fOrigGatewayIface, fInstalledServerIP);
 	fRoutesInstalled = false;
 	_RemoveSessionFile();
 	fInstalledServerIP = "";
+	fInstalledTunPeer = "";
 }
 
 

@@ -106,6 +106,9 @@ private:
 	// install the right routes ourselves once the tunnel is up.
 			void				_InstallRoutes(const BString& vpnServerIP);
 			void				_RemoveRoutes();
+	// Update only the default-route target when openvpn soft-restarts
+	// the tunnel and the server hands out a new in-tunnel peer.
+			void				_RefreshTunRoute();
 
 			void				_SetState(VPNState state,
 									const char* detail = NULL);
@@ -129,6 +132,12 @@ private:
 			BString				fOrigGatewayIface;
 			BString				fTunPeer;
 			BString				fInstalledServerIP;
+	// The tunnel peer the currently-installed default route points at.
+	// Distinct from fTunPeer, which always reflects the latest
+	// PUSH_REPLY: when openvpn soft-restarts the server hands out a new
+	// peer, fTunPeer updates immediately but the kernel route still
+	// targets the old one until _RefreshTunRoute swaps them.
+			BString				fInstalledTunPeer;
 			bool				fRoutesInstalled;
 	// Which Haiku tunnel slot we ended up using this session: e.g. "tun/0"
 	// for the interface name (passed to ifconfig and route) and "/dev/tun/0"
