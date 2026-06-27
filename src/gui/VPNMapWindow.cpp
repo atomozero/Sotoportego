@@ -40,7 +40,7 @@ VPNMapWindow::VPNMapWindow()
 	BWindow(BRect(120, 100, 1080, 720),
 		"Browse servers on map",
 		B_TITLED_WINDOW,
-		B_AUTO_UPDATE_SIZE_LIMITS | B_QUIT_ON_WINDOW_CLOSE),
+		B_AUTO_UPDATE_SIZE_LIMITS),
 	fMap(NULL),
 	fHostValue(NULL),
 	fCountryValue(NULL),
@@ -113,6 +113,16 @@ VPNMapWindow::_BuildLayout()
 	fSessionsValue = new MetricPill("sessionsValue");
 	fLogPolicyValue = new BStringView("logPolicyValue", "\xe2\x80\x94");
 	fLogPolicyValue->SetFont(be_bold_font);
+
+	// Pin the side-panel BBox at a fixed width that's comfortable for the
+	// longest hostnames vpngate publishes (~30 chars). With
+	// B_AUTO_UPDATE_SIZE_LIMITS on the window, leaving the BBox free to
+	// grow makes the whole window resize on every pin click; locking the
+	// width here keeps the geometry stable and gives the map a constant
+	// canvas to draw on.
+	const float kPanelWidth = 340.0f;
+	detailsBox->SetExplicitMinSize(BSize(kPanelWidth, 0));
+	detailsBox->SetExplicitMaxSize(BSize(kPanelWidth, B_SIZE_UNLIMITED));
 
 	BLayoutBuilder::Grid<>(detailsBox, B_USE_DEFAULT_SPACING,
 			B_USE_SMALL_SPACING)
@@ -297,7 +307,12 @@ VPNMapWindow::_ApplyCatalogue(BMessage* message)
 		count++;
 	}
 
-	fMap->ZoomToFit();
+	// Defer the fit through the looper rather than calling ZoomToFit()
+	// inline: when the daemon answers from cache the catalogue lands
+	// during initial layout, with the map view's Bounds() still at zero,
+	// and the resulting zoom is meaningless. Posting kMsgZoomFit lets the
+	// layout settle first.
+	PostMessage(kMsgZoomFit, fMap);
 	_RefreshSidePanel();
 
 	if (fStatusBar != NULL) {

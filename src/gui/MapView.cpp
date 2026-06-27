@@ -512,7 +512,14 @@ MapView::ZoomToFit()
 	float zoomLat = (bounds.Height() * 0.7f) / mercSpan;
 
 	float rawZoom = std::min(zoomLat, zoomLon);
-	int level = _LevelForZoom(rawZoom);
+	// Snap to the next zoom level that's at most as tight as the calculated
+	// fit. _LevelForZoom rounds to the nearest level, which can pick the
+	// finer zoom and crop pins at the edges; floor-rounding here guarantees
+	// the chosen zoom is always wide enough to contain all pins (with the
+	// 0.7x padding above).
+	int level = (int)floorf(log2f(rawZoom * 360.0f / 256.0f));
+	if (level < kMinZoomLevel) level = kMinZoomLevel;
+	if (level > kMaxZoomLevel) level = kMaxZoomLevel;
 	fZoom = _ZoomForLevel(level);
 
 	Invalidate();
