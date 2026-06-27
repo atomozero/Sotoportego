@@ -548,6 +548,16 @@ OpenVPNBackend::_SpawnOpenVPN(const VPNProfile& profile)
 		(char*)"--management-query-passwords",
 		(char*)"--route-noexec",
 		(char*)"--ifconfig-noexec",
+		// Cap the TCP MSS so each tunnelled segment fits comfortably
+		// inside the carrier link's MTU after our own header overhead.
+		// Without this Haiku's TCP stack returns partial sends from
+		// time to time (`TCP/UDP packet was truncated/expanded on
+		// write`), which openvpn treats as a fatal error and triggers
+		// a soft restart -- the symptom is a session that drops every
+		// few minutes when the Wi-Fi is even mildly stressed. 1300
+		// leaves headroom for 60 bytes of TCP/IP plus our tunnel
+		// framing on a standard 1500-byte path.
+		(char*)"--mssfix", (char*)"1300",
 		(char*)"--verb", (char*)"3",
 		NULL
 	};
