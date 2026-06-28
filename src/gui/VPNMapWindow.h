@@ -12,7 +12,9 @@
 
 #include <map>
 
+class BBox;
 class BButton;
+class BColumnListView;
 class BStringView;
 class MapView;
 class MetricPill;
@@ -44,6 +46,18 @@ private:
 			void				_BuildLayout();
 			void				_RefreshSidePanel();
 
+	// Cluster drill-down: kMsgClusterSelected carries one repeated
+	// (host, country, ping, score, sessions, logPolicy) tuple per
+	// member; _ApplyCluster reads them all into fClusterList and shows
+	// fClusterBox. Picking a row promotes that host to the live map
+	// selection (via _PickClusterRow) so the Server panel + Connect
+	// button keep working as for a single-pin click. The list hides
+	// itself again on Close, on Disconnect-to-elsewhere, or when a
+	// new single-pin click invalidates the previous cluster.
+			void				_ApplyCluster(const BMessage* message);
+			void				_PickClusterRow();
+			void				_HideCluster();
+
 	// Daemon plumbing.
 			void				_EnsureDaemon();
 			void				_RequestCatalogue(bool force);
@@ -53,6 +67,13 @@ private:
 									const char* pass);
 
 			MapView*			fMap;
+	// Drill-down list shown below the Server side panel when the user
+	// clicks a cluster pin (count > 1 servers rendered onto the same
+	// pixel). Hidden until kMsgClusterSelected lands. Row click sets the
+	// chosen host as the live map selection so the Server panel + Connect
+	// button work exactly as for a single-pin click.
+			BBox*				fClusterBox;
+			BColumnListView*	fClusterList;
 
 			BStringView*		fHostValue;
 			BStringView*		fCountryValue;

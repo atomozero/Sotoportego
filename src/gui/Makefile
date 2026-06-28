@@ -45,7 +45,7 @@ RSRCS =
 # (used by the .ovpn import flow). $(STDCPPLIBS) pulls in libstdc++/libsupc++
 # — the makefile-engine links with `cc`, which does not add the C++ runtime
 # itself.
-LIBS = be tracker translation $(STDCPPLIBS)
+LIBS = be tracker translation columnlistview $(STDCPPLIBS)
 
 # Additional paths to directories following the standard libXXX.so layout.
 LIBPATHS =

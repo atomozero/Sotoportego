@@ -9,6 +9,8 @@
 #include <Alert.h>
 #include <Box.h>
 #include <Button.h>
+#include <ColumnListView.h>
+#include <ColumnTypes.h>
 #include <Font.h>
 #include <LayoutBuilder.h>
 #include <Menu.h>
@@ -32,6 +34,8 @@ static const uint32 kMsgConnectPicked		= 'mwCo';
 static const uint32 kMsgRefresh				= 'mwRf';
 static const uint32 kMsgCredentialsOK		= 'mwCO';
 static const uint32 kMsgCredentialsCancel	= 'mwCC';
+static const uint32 kMsgClusterRowInvoked	= 'mwCR';
+static const uint32 kMsgClusterClose		= 'mwCX';
 
 
 // --- VPNMapWindow ----------------------------------------------------------
@@ -43,6 +47,8 @@ VPNMapWindow::VPNMapWindow()
 		B_TITLED_WINDOW,
 		B_AUTO_UPDATE_SIZE_LIMITS),
 	fMap(NULL),
+	fClusterBox(NULL),
+	fClusterList(NULL),
 	fHostValue(NULL),
 	fCountryValue(NULL),
 	fPingValue(NULL),
@@ -147,6 +153,44 @@ VPNMapWindow::_BuildLayout()
 	fConnectButton->MakeDefault(true);
 	fConnectButton->SetEnabled(false);
 
+	// --- cluster drill-down list ---------------------------------------
+	// Hidden until the user clicks a cluster (count > 1). The panel is
+	// kPanelWidth-wide, so the columns are tuned for that budget; the
+	// detail metadata that doesn't fit in a row (full country name,
+	// log policy) is what the Server panel above already shows once a
+	// row is picked, so we don't repeat it here.
+	fClusterBox = new BBox("clusterBox");
+	fClusterBox->SetLabel("Servers in this area");
+	fClusterBox->SetExplicitMinSize(BSize(kPanelWidth, 0));
+	fClusterBox->SetExplicitMaxSize(BSize(kPanelWidth, B_SIZE_UNLIMITED));
+
+	fClusterList = new BColumnListView("clusterList",
+		B_NAVIGABLE | B_WILL_DRAW | B_FRAME_EVENTS, B_FANCY_BORDER, true);
+	fClusterList->AddColumn(new BStringColumn("Host", 170, 80, 600,
+		B_TRUNCATE_MIDDLE), 0);
+	fClusterList->AddColumn(new BIntegerColumn("Ping", 50, 40, 100,
+		B_ALIGN_RIGHT), 1);
+	fClusterList->AddColumn(new BIntegerColumn("Score", 70, 50, 140,
+		B_ALIGN_RIGHT), 2);
+	fClusterList->SetSortingEnabled(true);
+	fClusterList->SetSortColumn(fClusterList->ColumnAt(1), false, true);
+	fClusterList->SetInvocationMessage(new BMessage(kMsgClusterRowInvoked));
+	fClusterList->SetSelectionMessage(new BMessage(kMsgClusterRowInvoked));
+	fClusterList->SetTarget(this);
+
+	BButton* clusterCloseButton = new BButton("clusterClose", "Close",
+		new BMessage(kMsgClusterClose));
+
+	BLayoutBuilder::Group<>(fClusterBox, B_VERTICAL, B_USE_SMALL_SPACING)
+		.SetInsets(B_USE_DEFAULT_SPACING, B_USE_BIG_INSETS,
+			B_USE_DEFAULT_SPACING, B_USE_DEFAULT_SPACING)
+		.Add(fClusterList)
+		.AddGroup(B_HORIZONTAL, B_USE_SMALL_SPACING)
+			.AddGlue()
+			.Add(clusterCloseButton)
+		.End();
+	fClusterBox->Hide();
+
 	// --- status bar -----------------------------------------------------
 	fStatusBar = new BStringView("statusBar",
 		"Fetching server catalogue from vpngate.net" B_UTF8_ELLIPSIS);
@@ -189,6 +233,7 @@ VPNMapWindow::_BuildLayout()
 			.Add(fMap, 0.72f)
 			.AddGroup(B_VERTICAL, B_USE_DEFAULT_SPACING, 0.28f)
 				.Add(detailsBox)
+				.Add(fClusterBox)
 				.AddGlue()
 				.Add(fConnectButton)
 			.End()
@@ -449,6 +494,26 @@ VPNMapWindow::MessageReceived(BMessage* message)
 			// host string; the side panel reads through
 			// MapView::SelectedServer() which has been updated already.
 			_RefreshSidePanel();
+			// A single-pin click invalidates whatever cluster drill-down
+			// was on screen: the user has clearly moved on.
+			_HideCluster();
+			break;
+
+		case kMsgClusterSelected:
+			// MapView fires this alongside kMsgServerSelected when the
+			// click landed on a cluster (count > 1). Populate the
+			// drill-down list with every member; the Server panel above
+			// stays on the cluster's representative until the user
+			// picks a different row.
+			_ApplyCluster(message);
+			break;
+
+		case kMsgClusterRowInvoked:
+			_PickClusterRow();
+			break;
+
+		case kMsgClusterClose:
+			_HideCluster();
 			break;
 
 		case kMsgZoomIn:
@@ -526,4 +591,80 @@ VPNMapWindow::MessageReceived(BMessage* message)
 			BWindow::MessageReceived(message);
 			break;
 	}
+}
+
+
+void
+VPNMapWindow::_ApplyCluster(const BMessage* message)
+{
+	if (fClusterList == NULL || fClusterBox == NULL)
+		return;
+
+	fClusterList->Clear();
+
+	int32 count = 0;
+	for (;; count++) {
+		const char* host = NULL;
+		if (message->FindString(kClusterHost, count, &host) != B_OK
+				|| host == NULL || host[0] == '\0') {
+			break;
+		}
+
+		int32 ping = 0;
+		int32 score = 0;
+		message->FindInt32(kClusterPing, count, &ping);
+		message->FindInt32(kClusterScore, count, &score);
+
+		BRow* row = new BRow();
+		row->SetField(new BStringField(host), 0);
+		row->SetField(new BIntegerField(ping), 1);
+		row->SetField(new BIntegerField(score), 2);
+		fClusterList->AddRow(row);
+	}
+
+	if (count == 0) {
+		_HideCluster();
+		return;
+	}
+
+	BString label("Servers in this area (");
+	label << count << ")";
+	fClusterBox->SetLabel(label.String());
+
+	if (fClusterBox->IsHidden())
+		fClusterBox->Show();
+}
+
+
+void
+VPNMapWindow::_PickClusterRow()
+{
+	if (fClusterList == NULL || fMap == NULL)
+		return;
+
+	BRow* row = fClusterList->CurrentSelection();
+	if (row == NULL)
+		return;
+
+	BStringField* hostField = dynamic_cast<BStringField*>(row->GetField(0));
+	if (hostField == NULL)
+		return;
+
+	// Promote the picked host to the map's live selection so the Server
+	// panel above shows its details and the existing Connect button
+	// works without any extra wiring. SetSelectedHost is a no-op if the
+	// host isn't in the catalogue, which can't happen here since the
+	// cluster came from the same catalogue.
+	fMap->SetSelectedHost(BString(hostField->String()));
+	_RefreshSidePanel();
+}
+
+
+void
+VPNMapWindow::_HideCluster()
+{
+	if (fClusterList != NULL)
+		fClusterList->Clear();
+	if (fClusterBox != NULL && !fClusterBox->IsHidden())
+		fClusterBox->Hide();
 }

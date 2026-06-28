@@ -10,6 +10,8 @@
 #define MAP_VIEW_H
 
 
+#include <vector>
+
 #include <View.h>
 
 #include "Compat.h"
@@ -29,12 +31,27 @@ enum {
 	kMsgDownloadArea	= 'mvDa',
 	// Sent to the host window when the user clicks a server pin. Carries
 	// kFieldHost (string).
-	kMsgServerSelected	= 'mvSs'
+	kMsgServerSelected	= 'mvSs',
+	// Sent when the user clicks a cluster (a pin badge whose count > 1).
+	// Carries one repeated entry per cluster member under each kCluster*
+	// field below, in the same order, so the side panel / main window can
+	// list them and let the user pick one. The "representative" host (the
+	// highest-scored pin in the cluster, same one MouseDown would have
+	// selected before this commit) is also added under kFieldHost so the
+	// existing single-pin selection path still fires alongside.
+	kMsgClusterSelected	= 'mvSc'
 };
 
 
-// BMessage field name used by kMsgServerSelected.
+// BMessage field names used by kMsgServerSelected / kMsgClusterSelected.
 extern const char* const kFieldHost;
+extern const char* const kClusterHost;
+extern const char* const kClusterCountryShort;
+extern const char* const kClusterCountryLong;
+extern const char* const kClusterLogPolicy;
+extern const char* const kClusterPing;
+extern const char* const kClusterScore;
+extern const char* const kClusterSessions;
 
 
 // One VPN server placed on the map. The host string is the canonical
@@ -135,6 +152,12 @@ private:
 			const ServerPin*	_FindPinByHost(const BString& host) const;
 
 			ServerPin*			_FindPinAt(BPoint where);
+	// Populate `out` with every pin whose screen-rounded position lands
+	// on the same pixel as `representative`. Used by MouseDown to detect
+	// cluster clicks. Returns the number of members appended.
+			int32				_CollectClusterMembers(
+									const ServerPin* representative,
+									std::vector<const ServerPin*>& out) const;
 			int					_ZoomToTileZoom() const;
 
 			OwningObjectList<ServerPin>	fPins;

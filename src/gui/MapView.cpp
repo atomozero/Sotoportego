@@ -27,7 +27,14 @@
 #include "TileCache.h"
 
 
-const char* const kFieldHost = "soto:map:host";
+const char* const kFieldHost			= "soto:map:host";
+const char* const kClusterHost			= "soto:map:cluster:host";
+const char* const kClusterCountryShort	= "soto:map:cluster:countryShort";
+const char* const kClusterCountryLong	= "soto:map:cluster:countryLong";
+const char* const kClusterLogPolicy		= "soto:map:cluster:logPolicy";
+const char* const kClusterPing			= "soto:map:cluster:pingMs";
+const char* const kClusterScore			= "soto:map:cluster:score";
+const char* const kClusterSessions		= "soto:map:cluster:sessions";
 
 
 // Zoom levels match Google Maps / OSM standard: fZoom = 256 * 2^z / 360
@@ -235,6 +242,32 @@ MapView::MouseDown(BPoint where)
 				BMessage out(kMsgServerSelected);
 				out.AddString(kFieldHost, pin->host);
 				Window()->PostMessage(&out);
+
+				// If this pin is actually the representative of a cluster
+				// (>=2 servers rendered onto the same pixel), also emit a
+				// kMsgClusterSelected so the main window can offer the
+				// drill-down list. The single-pin message above still goes
+				// out, so the side panel keeps refreshing as before.
+				std::vector<const ServerPin*> members;
+				int32 count = _CollectClusterMembers(pin, members);
+				if (count > 1) {
+					BMessage cluster(kMsgClusterSelected);
+					cluster.AddString(kFieldHost, pin->host);
+					for (size_t i = 0; i < members.size(); i++) {
+						const ServerPin* m = members[i];
+						cluster.AddString(kClusterHost, m->host);
+						cluster.AddString(kClusterCountryShort,
+							m->countryShort);
+						cluster.AddString(kClusterCountryLong,
+							m->countryLong);
+						cluster.AddString(kClusterLogPolicy,
+							m->logPolicy);
+						cluster.AddInt32(kClusterPing, m->pingMs);
+						cluster.AddInt32(kClusterScore, m->score);
+						cluster.AddInt32(kClusterSessions, m->sessions);
+					}
+					Window()->PostMessage(&cluster);
+				}
 			}
 		} else {
 			fDragging = true;
@@ -1334,5 +1367,33 @@ MapView::_FindPinAt(BPoint where)
 	}
 
 	return best;
+}
+
+
+int32
+MapView::_CollectClusterMembers(const ServerPin* representative,
+	std::vector<const ServerPin*>& out) const
+{
+	if (representative == NULL)
+		return 0;
+
+	// Use the same pixel-rounding rule as _DrawPins so clusters here and
+	// clusters drawn on screen agree on membership.
+	BPoint repPos = _LatLonToScreen(representative->latitude,
+		representative->longitude);
+	int32 rx = (int32)floorf(repPos.x + 0.5f);
+	int32 ry = (int32)floorf(repPos.y + 0.5f);
+
+	out.clear();
+	for (int32 i = 0; i < fPins.CountItems(); i++) {
+		const ServerPin* pin = fPins.ItemAt(i);
+		BPoint pos = _LatLonToScreen(pin->latitude, pin->longitude);
+		if ((int32)floorf(pos.x + 0.5f) == rx
+				&& (int32)floorf(pos.y + 0.5f) == ry) {
+			out.push_back(pin);
+		}
+	}
+
+	return (int32)out.size();
 }
 
