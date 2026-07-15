@@ -72,9 +72,11 @@ public:
 	void					SetEnabled(bool enabled);
 	bool					IsEnabled() const { return fEnabled; }
 
-	// Disk cache stats
-	off_t					DiskCacheSize() const { return fDiskCacheSize; }
-	int32					DiskTileCount() const { return fDiskTileCount; }
+	// Disk cache stats. Read from the window thread (MapView::Draw) while the
+	// looper thread mutates them, so they take fLock -- a torn read of the
+	// 64-bit byte count is otherwise possible on a 32-bit build.
+	off_t					DiskCacheSize() const;
+	int32					DiskTileCount() const;
 
 private:
 	void					_FetchTile(int z, int x, int y,

@@ -320,6 +320,11 @@ VPNMapWindow::_ApplyCatalogue(BMessage* message)
 		return;
 	}
 
+	// The cluster drill-down references pins from the current catalogue that
+	// we're about to replace; close it so it can't linger with stale rows and
+	// a stale "servers in this area" count after the refresh.
+	_HideCluster();
+
 	fMap->ClearServers();
 	fOvpnByHost.clear();
 

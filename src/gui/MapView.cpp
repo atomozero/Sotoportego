@@ -779,6 +779,14 @@ MapView::_DrawTiles()
 	int maxTileX = (int)floor((rightLon + 180.0f) / 360.0f * numTiles);
 
 	// tile y = floor((1 - ln(tan(lat) + sec(lat)) / pi) / 2 * 2^z)
+	// Web Mercator is only defined up to ~±85.0511 deg; past that tan()/sec()
+	// blow up toward infinity and the tile math yields NaN, which the integer
+	// clamp below does NOT catch. Clamp the latitudes before projecting.
+	const float kMaxMercatorLat = 85.0511f;
+	if (topLat > kMaxMercatorLat) topLat = kMaxMercatorLat;
+	if (topLat < -kMaxMercatorLat) topLat = -kMaxMercatorLat;
+	if (botLat > kMaxMercatorLat) botLat = kMaxMercatorLat;
+	if (botLat < -kMaxMercatorLat) botLat = -kMaxMercatorLat;
 	float latRadTop = topLat * M_PI / 180.0f;
 	float latRadBot = botLat * M_PI / 180.0f;
 

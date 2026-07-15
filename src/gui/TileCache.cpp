@@ -152,6 +152,7 @@ TileCache::MessageReceived(BMessage* msg)
 						// Track new tile's disk size
 						struct stat st;
 						if (stat(path.String(), &st) == 0) {
+							BAutolock lock(fLock);
 							fDiskCacheSize += st.st_size;
 							fDiskTileCount++;
 						}
@@ -228,6 +229,22 @@ TileCache::DrawTile(BView* view, int z, int x, int y, BRect dest)
 }
 
 
+off_t
+TileCache::DiskCacheSize() const
+{
+	BAutolock lock(fLock);
+	return fDiskCacheSize;
+}
+
+
+int32
+TileCache::DiskTileCount() const
+{
+	BAutolock lock(fLock);
+	return fDiskTileCount;
+}
+
+
 void
 TileCache::SetEnabled(bool enabled)
 {
@@ -270,6 +287,7 @@ TileCache::_LoadFromDisk(int z, int x, int y)
 		// Update disk cache accounting before removing
 		struct stat st;
 		if (stat(path.String(), &st) == 0) {
+			BAutolock lock(fLock);
 			fDiskCacheSize = (fDiskCacheSize > (off_t)st.st_size)
 				? (fDiskCacheSize - st.st_size) : 0;
 			if (fDiskTileCount > 0)
@@ -429,6 +447,7 @@ TileCache::_PruneDiskCache()
 		// Remove from memory cache if loaded
 		// (file path encodes z/x/y but we just remove the file)
 		if (remove(info->path.String()) == 0) {
+			BAutolock lock(fLock);
 			fDiskCacheSize -= info->size;
 			fDiskTileCount--;
 		}
