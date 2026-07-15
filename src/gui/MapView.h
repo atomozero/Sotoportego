@@ -143,7 +143,7 @@ private:
 	// count badged on top of `representative` -- typically the highest-
 	// scored server in the cluster).
 			void				_DrawPin(const ServerPin& representative,
-									int count = 1);
+									int count = 1, bool hover = false);
 			void				_DrawSelf();
 			void				_DrawConnectionArc();
 			void				_DrawScaleBar();

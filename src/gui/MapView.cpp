@@ -1088,15 +1088,17 @@ MapView::_DrawPins()
 
 		// Synthesise the representative's flags so a cluster picks up the
 		// highlighting state from any member without mutating the pins.
+		// Hover can't ride on the shadow copy (the pointer-identity test in
+		// _DrawPin would never match a stack local), so pass it explicitly.
 		ServerPin shadow = *rep;
 		shadow.selected = cluster.selected;
-		_DrawPin(shadow, cluster.count);
+		_DrawPin(shadow, cluster.count, cluster.hover);
 	}
 }
 
 
 void
-MapView::_DrawPin(const ServerPin& pin, int count)
+MapView::_DrawPin(const ServerPin& pin, int count, bool hover)
 {
 	BPoint pos = _LatLonToScreen(pin.latitude, pin.longitude);
 	BRect bounds = Bounds();
@@ -1110,7 +1112,7 @@ MapView::_DrawPin(const ServerPin& pin, int count)
 	if (pin.selected) {
 		fill = kPinSelected;
 		radius += 2;
-	} else if (&pin == fHoverPin) {
+	} else if (hover) {
 		fill = kPinHover;
 		radius += 1;
 	}
@@ -1382,22 +1384,46 @@ MapView::_FindPinAt(BPoint where)
 {
 	float radius = kPinRadius + 5;
 
-	// With country-centroid geocoding many pins land on the same screen
-	// position; collect every hit and return the highest-scored one so a
-	// click on the cluster picks the server the user most likely wants.
-	ServerPin* best = NULL;
+	// Step 1: find the pin physically nearest the click (within the hit
+	// radius). Its rounded pixel identifies which drawn cluster was hit.
+	ServerPin* nearest = NULL;
+	float nearestDist = radius;
 	for (int32 i = fPins.CountItems() - 1; i >= 0; i--) {
 		ServerPin* pin = fPins.ItemAt(i);
 		BPoint pos = _LatLonToScreen(pin->latitude, pin->longitude);
 		float dx = where.x - pos.x;
 		float dy = where.y - pos.y;
-		if (sqrt(dx * dx + dy * dy) > radius)
+		float dist = sqrtf(dx * dx + dy * dy);
+		if (dist <= nearestDist) {
+			nearestDist = dist;
+			nearest = pin;
+		}
+	}
+	if (nearest == NULL)
+		return NULL;
+
+	// Step 2: return that pixel-cluster's representative -- the highest-scored
+	// pin sharing the nearest pin's rounded pixel, earliest index winning
+	// ties. This is exactly how _DrawPins picks the badge target and
+	// _CollectClusterMembers gathers members, so the click, the badge it lands
+	// on, and the drill-down list all agree. (The old code returned the
+	// highest-scored pin anywhere within the radius, which could be a
+	// different pixel-cluster than the one drawn under the cursor.)
+	BPoint nearPos = _LatLonToScreen(nearest->latitude, nearest->longitude);
+	int32 rx = (int32)floorf(nearPos.x + 0.5f);
+	int32 ry = (int32)floorf(nearPos.y + 0.5f);
+	ServerPin* rep = NULL;
+	for (int32 i = 0; i < fPins.CountItems(); i++) {
+		ServerPin* pin = fPins.ItemAt(i);
+		BPoint pos = _LatLonToScreen(pin->latitude, pin->longitude);
+		if ((int32)floorf(pos.x + 0.5f) != rx
+				|| (int32)floorf(pos.y + 0.5f) != ry)
 			continue;
-		if (best == NULL || pin->score > best->score)
-			best = pin;
+		if (rep == NULL || pin->score > rep->score)
+			rep = pin;
 	}
 
-	return best;
+	return rep;
 }
 
 
