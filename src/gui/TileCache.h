@@ -19,6 +19,8 @@
 
 #include <sys/types.h>
 
+class BView;
+
 
 // Messages
 enum {
@@ -59,8 +61,13 @@ public:
 	void					RequestTiles(int z, int minX, int minY,
 								int maxX, int maxY, BHandler* target);
 
-	// Get a tile from memory cache (returns NULL if not loaded)
-	BBitmap*				GetCachedTile(int z, int x, int y);
+	// Draw a cached tile into `view` at `dest`. The lookup and the DrawBitmap
+	// both happen under fLock, so a concurrent _PruneMemoryCache() on the
+	// looper thread can't free the bitmap mid-draw. Must be called from
+	// `view`'s window thread. Returns false (drawing nothing) when the tile
+	// isn't in the memory cache.
+	bool					DrawTile(BView* view, int z, int x, int y,
+								BRect dest);
 
 	void					SetEnabled(bool enabled);
 	bool					IsEnabled() const { return fEnabled; }

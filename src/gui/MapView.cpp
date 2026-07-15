@@ -796,10 +796,6 @@ MapView::_DrawTiles()
 	// Draw cached tiles
 	for (int tx = minTileX; tx <= maxTileX; tx++) {
 		for (int ty = minTileY; ty <= maxTileY; ty++) {
-			BBitmap* bitmap = fTileCache->GetCachedTile(tileZ, tx, ty);
-			if (bitmap == NULL)
-				continue;
-
 			// Tile top-left corner in lat/lon
 			float tileLon = (float)tx * 360.0f / numTiles - 180.0f;
 			float n = M_PI - 2.0f * M_PI * ty / numTiles;
@@ -816,7 +812,12 @@ MapView::_DrawTiles()
 			BPoint botRight = _LatLonToScreen(nextLat, nextLon);
 
 			BRect destRect(topLeft.x, topLeft.y, botRight.x, botRight.y);
-			DrawBitmap(bitmap, destRect);
+			// DrawTile does the lookup and the DrawBitmap under the cache
+			// lock (see TileCache::DrawTile); a missing tile just draws
+			// nothing. This closes the use-after-free window where the
+			// looper thread's _PruneMemoryCache() could free a bitmap
+			// while we were mid-draw.
+			fTileCache->DrawTile(this, tileZ, tx, ty, destRect);
 		}
 	}
 

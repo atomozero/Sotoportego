@@ -17,6 +17,7 @@
 #include <Messenger.h>
 #include <Path.h>
 #include <TranslationUtils.h>
+#include <View.h>
 #include <TranslatorRoster.h>
 
 #include <cstdio>
@@ -206,16 +207,24 @@ TileCache::RequestTiles(int z, int minX, int minY, int maxX, int maxY,
 }
 
 
-BBitmap*
-TileCache::GetCachedTile(int z, int x, int y)
+bool
+TileCache::DrawTile(BView* view, int z, int x, int y, BRect dest)
 {
+	if (view == NULL)
+		return false;
+
+	// Hold the lock across the DrawBitmap: _PruneMemoryCache() (looper
+	// thread) takes the same lock to delete entries, so while we draw it
+	// cannot free this bitmap out from under us. DrawBitmap just queues a
+	// command to app_server, so the critical section stays short.
 	BAutolock lock(fLock);
 	TileEntry* entry = _FindEntry(z, x, y);
-	if (entry != NULL) {
-		entry->lastUsed = system_time();
-		return entry->bitmap;
-	}
-	return NULL;
+	if (entry == NULL || entry->bitmap == NULL)
+		return false;
+
+	entry->lastUsed = system_time();
+	view->DrawBitmap(entry->bitmap, dest);
+	return true;
 }
 
 
