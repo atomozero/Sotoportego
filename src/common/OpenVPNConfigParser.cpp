@@ -104,6 +104,10 @@ OpenVPNConfigParser::ParseText(const std::string& text, VPNProfile& profile)
 		profile.fPort = 1194;
 
 	bool sawPort = false;
+	// Name of the OpenVPN inline block we're currently inside (e.g. "ca" for
+	// a <ca>...</ca> section), or empty when not in one. Empty until we hit an
+	// opening tag.
+	std::string inlineTag;
 
 	// Split into lines on '\n'; trailing '\r' is handled by trim().
 	size_t start = 0;
@@ -117,6 +121,21 @@ OpenVPNConfigParser::ParseText(const std::string& text, VPNProfile& profile)
 
 		if (line.empty() || line[0] == '#' || line[0] == ';')
 			continue;
+
+		// OpenVPN inline blocks -- <ca>, <cert>, <key>, <tls-auth>, etc. --
+		// wrap PEM/base64 bodies that must never be interpreted as directives
+		// (a body line could otherwise coincide with one). Swallow everything
+		// from the opening tag through its matching close tag.
+		if (!inlineTag.empty()) {
+			if (line == "</" + inlineTag + ">")
+				inlineTag.clear();
+			continue;
+		}
+		if (line.size() >= 3 && line[0] == '<' && line[1] != '/'
+				&& line[line.size() - 1] == '>') {
+			inlineTag = line.substr(1, line.size() - 2);
+			continue;
+		}
 
 		std::vector<std::string> tokens;
 		tokenize(line, tokens);
