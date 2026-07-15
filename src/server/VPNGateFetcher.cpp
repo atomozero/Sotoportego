@@ -4,6 +4,7 @@
  */
 #include "VPNGateFetcher.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -137,9 +138,25 @@ http_get(const char* host, int port, const char* path, BString& bodyOut,
 	char buf[8192];
 	while (true) {
 		ssize_t got = recv(sock, buf, sizeof(buf), 0);
-		if (got <= 0)
-			break;
-		response.Append(buf, got);
+		if (got > 0) {
+			response.Append(buf, got);
+			continue;
+		}
+		if (got == 0)
+			break;			// peer closed cleanly: the body is complete
+		if (errno == EINTR)
+			continue;		// interrupted before any data; retry
+		// got < 0 with a real error. SO_RCVTIMEO surfaces here as EAGAIN/
+		// EWOULDBLOCK -- if we treated that as a clean EOF (as the old
+		// `got <= 0` did) we would silently accept a truncated multi-MB
+		// catalogue as complete, mangling the last CSV row's base64 config.
+		// Fail loudly instead.
+		close(sock);
+		if (errno == EAGAIN || errno == EWOULDBLOCK)
+			errorOut = "Timed out reading response from vpngate.net";
+		else
+			errorOut = "Read error while fetching from vpngate.net";
+		return false;
 	}
 	close(sock);
 

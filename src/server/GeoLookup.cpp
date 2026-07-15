@@ -4,6 +4,7 @@
  */
 #include "GeoLookup.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -117,9 +118,19 @@ http_get(const char* host, int port, const char* path)
 	char buf[1024];
 	while (true) {
 		ssize_t got = recv(sock, buf, sizeof(buf), 0);
-		if (got <= 0)
-			break;
-		response.Append(buf, got);
+		if (got > 0) {
+			response.Append(buf, got);
+			continue;
+		}
+		if (got == 0)
+			break;			// peer closed cleanly: the body is complete
+		if (errno == EINTR)
+			continue;		// interrupted before any data; retry
+		// A read error or SO_RCVTIMEO timeout (EAGAIN/EWOULDBLOCK) leaves us
+		// with a partial JSON body; treating it as EOF would feed truncated
+		// JSON to the parser. Fail the lookup instead (empty == failure).
+		close(sock);
+		return BString();
 	}
 	close(sock);
 
