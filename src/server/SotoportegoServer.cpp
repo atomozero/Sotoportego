@@ -195,8 +195,15 @@ SotoportegoServer::_HandleConnect(BMessage* message)
 	// file contents into our log. So: absolute path, no .. segments, file
 	// must exist and be readable as us.
 	const BString& configPath = profile.fConfigPath;
+	// Reject genuine parent-directory traversal -- a "/../" segment or a
+	// trailing "/.." -- but not an innocent filename that merely contains
+	// ".." (e.g. "server..ovpn"), which the old bare-substring test wrongly
+	// refused. The path is already required to be absolute, so a leading
+	// "../" can't occur.
+	bool traversal = configPath.FindFirst("/../") >= 0
+		|| configPath.EndsWith("/..");
 	bool pathOk = configPath.Length() > 0 && configPath[0] == '/'
-		&& configPath.FindFirst("..") < 0;
+		&& !traversal;
 	if (pathOk && access(configPath.String(), R_OK) != 0)
 		pathOk = false;
 	if (!pathOk) {

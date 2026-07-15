@@ -71,8 +71,10 @@ static BString
 http_get(const char* host, int port, const char* path)
 {
 	struct hostent* he = gethostbyname(host);
-	if (he == NULL || he->h_addr_list == NULL || he->h_addr_list[0] == NULL)
-		return BString();
+	if (he == NULL || he->h_addr_list == NULL || he->h_addr_list[0] == NULL
+			|| he->h_addrtype != AF_INET
+			|| he->h_length != (int)sizeof(struct in_addr))
+		return BString();	// only IPv4 fits the sockaddr_in below
 
 	int sock = socket(AF_INET, SOCK_STREAM, 0);
 	if (sock < 0)

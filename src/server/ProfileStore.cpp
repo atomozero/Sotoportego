@@ -167,7 +167,11 @@ ProfileStore::_WriteToDisk() const
 	file.Unset();
 
 	if (rename(tempPath.String(), path.Path()) != 0) {
-		status_t renameErr = errno;
+		// rename() sets a positive POSIX errno; convert to Haiku's negative
+		// status_t so callers' `!= B_OK` checks and strerror() see a real
+		// error code rather than a small positive number that reads as
+		// almost-success.
+		status_t renameErr = B_FROM_POSIX_ERROR(errno);
 		unlink(tempPath.String());
 		return renameErr;
 	}

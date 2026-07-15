@@ -84,7 +84,11 @@ http_get(const char* host, int port, const char* path, BString& bodyOut,
 	BString& errorOut)
 {
 	struct hostent* he = gethostbyname(host);
-	if (he == NULL || he->h_addr_list == NULL || he->h_addr_list[0] == NULL) {
+	if (he == NULL || he->h_addr_list == NULL || he->h_addr_list[0] == NULL
+			|| he->h_addrtype != AF_INET
+			|| he->h_length != (int)sizeof(struct in_addr)) {
+		// Only an IPv4 record fits the sockaddr_in below; anything else
+		// (e.g. an IPv6 h_length of 16) would overflow sin_addr.
 		errorOut = "DNS lookup failed for ";
 		errorOut << host;
 		return false;
