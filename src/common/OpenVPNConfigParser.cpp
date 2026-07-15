@@ -13,6 +13,21 @@
 
 // --- tiny string helpers ---------------------------------------------------
 
+// Parse a port token. Returns 0 when it isn't a whole number in 1..65535, so
+// garbage ("abc") or an out-of-range value ("99999", which a bare (uint16)atoi
+// would silently wrap to 33999) is rejected rather than becoming a plausible
+// wrong port.
+static uint16
+parse_port(const std::string& token)
+{
+	char* end = NULL;
+	long value = strtol(token.c_str(), &end, 10);
+	if (end == token.c_str() || *end != '\0' || value < 1 || value > 65535)
+		return 0;
+	return (uint16)value;
+}
+
+
 static std::string
 trim(const std::string& input)
 {
@@ -146,8 +161,11 @@ OpenVPNConfigParser::ParseText(const std::string& text, VPNProfile& profile)
 
 		if (directive == "remote" && tokens.size() >= 2) {
 			profile.fServer = tokens[1].c_str();
-			if (tokens.size() >= 3 && !sawPort)
-				profile.fPort = (uint16)atoi(tokens[2].c_str());
+			if (tokens.size() >= 3 && !sawPort) {
+				uint16 p = parse_port(tokens[2]);
+				if (p != 0)
+					profile.fPort = p;
+			}
 			// The `sawPort` guard only governs the port: an explicit `port`
 			// directive must win over the port carried on `remote`. The
 			// transport protocol is independent, so the remote's inline
@@ -158,8 +176,14 @@ OpenVPNConfigParser::ParseText(const std::string& text, VPNProfile& profile)
 		} else if (directive == "proto" && tokens.size() >= 2) {
 			profile.fProtocol = normalize_proto(tokens[1]).c_str();
 		} else if (directive == "port" && tokens.size() >= 2) {
-			profile.fPort = (uint16)atoi(tokens[1].c_str());
-			sawPort = true;
+			// Only a valid port takes effect (and blocks a later remote
+			// port); a bogus `port` line is ignored so it can't wipe out an
+			// otherwise-usable port from `remote`.
+			uint16 p = parse_port(tokens[1]);
+			if (p != 0) {
+				profile.fPort = p;
+				sawPort = true;
+			}
 		} else if (directive == "auth-user-pass") {
 			// The directive may take an optional filename argument; either
 			// way it tells us interactive (or scripted) credentials are
