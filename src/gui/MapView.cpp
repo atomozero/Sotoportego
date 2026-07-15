@@ -1273,6 +1273,36 @@ MapView::_DrawConnectionArc()
 	}
 
 	SetPenSize(1.0f);
+
+	// Destination label: the long country name (e.g. "Japan") in a small
+	// dark pill below the target pin, matching the self-position label so
+	// the two read as a pair. Falls back to the ISO-2 code if the long
+	// name is missing, then to the host as a last resort.
+	BString destLabel;
+	if (target->countryLong.Length() > 0)
+		destLabel = target->countryLong;
+	else if (target->countryShort.Length() > 0)
+		destLabel = target->countryShort;
+	else
+		destLabel = target->host;
+
+	if (destLabel.Length() > 0) {
+		BFont labelFont(be_plain_font);
+		labelFont.SetSize(10.0f);
+		SetFont(&labelFont);
+
+		float w = labelFont.StringWidth(destLabel.String());
+		// 25px below the target pin clears both the pin itself and the
+		// cluster count badge when the destination happens to be the
+		// representative of a multi-server cluster.
+		BPoint labelPos(b.x - w / 2.0f, b.y + 25.0f);
+		SetHighColor(0, 0, 0, 180);
+		FillRoundRect(BRect(labelPos.x - 4, labelPos.y - 10,
+			labelPos.x + w + 4, labelPos.y + 3), 3, 3);
+		SetHighColor(255, 255, 255);
+		DrawString(destLabel.String(), labelPos);
+	}
+
 	SetDrawingMode(B_OP_COPY);
 }
 

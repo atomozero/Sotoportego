@@ -35,7 +35,6 @@ static const uint32 kMsgRefresh				= 'mwRf';
 static const uint32 kMsgCredentialsOK		= 'mwCO';
 static const uint32 kMsgCredentialsCancel	= 'mwCC';
 static const uint32 kMsgClusterRowInvoked	= 'mwCR';
-static const uint32 kMsgClusterClose		= 'mwCX';
 
 
 // --- VPNMapWindow ----------------------------------------------------------
@@ -128,7 +127,12 @@ VPNMapWindow::_BuildLayout()
 	// width here keeps the geometry stable and gives the map a constant
 	// canvas to draw on.
 	const float kPanelWidth = 340.0f;
-	detailsBox->SetExplicitMinSize(BSize(kPanelWidth, 0));
+	// Pin both width AND a generous min-height so the cluster list below
+	// (with a "I want lots of space" max-size) can't push the Server
+	// panel down to nothing once a cluster is shown. The number is the
+	// natural height of the 6-row grid + insets; bump if a new field
+	// gets added.
+	detailsBox->SetExplicitMinSize(BSize(kPanelWidth, 200));
 	detailsBox->SetExplicitMaxSize(BSize(kPanelWidth, B_SIZE_UNLIMITED));
 
 	BLayoutBuilder::Grid<>(detailsBox, B_USE_DEFAULT_SPACING,
@@ -164,31 +168,29 @@ VPNMapWindow::_BuildLayout()
 	fClusterBox->SetExplicitMinSize(BSize(kPanelWidth, 0));
 	fClusterBox->SetExplicitMaxSize(BSize(kPanelWidth, B_SIZE_UNLIMITED));
 
+	// `false` for the 4th arg drops the horizontal scrollbar: hostnames
+	// truncate-middle so we never need it, and the bar otherwise eats
+	// real estate at the bottom of the box for nothing.
 	fClusterList = new BColumnListView("clusterList",
-		B_NAVIGABLE | B_WILL_DRAW | B_FRAME_EVENTS, B_FANCY_BORDER, true);
-	fClusterList->AddColumn(new BStringColumn("Host", 170, 80, 600,
+		B_NAVIGABLE | B_WILL_DRAW | B_FRAME_EVENTS, B_FANCY_BORDER, false);
+	fClusterList->AddColumn(new BStringColumn("Host", 180, 80, 600,
 		B_TRUNCATE_MIDDLE), 0);
 	fClusterList->AddColumn(new BIntegerColumn("Ping", 50, 40, 100,
 		B_ALIGN_RIGHT), 1);
-	fClusterList->AddColumn(new BIntegerColumn("Score", 70, 50, 140,
+	fClusterList->AddColumn(new BIntegerColumn("Score", 60, 50, 140,
 		B_ALIGN_RIGHT), 2);
 	fClusterList->SetSortingEnabled(true);
 	fClusterList->SetSortColumn(fClusterList->ColumnAt(1), false, true);
-	fClusterList->SetInvocationMessage(new BMessage(kMsgClusterRowInvoked));
+	// Single-click on a row updates the Server panel and arms the
+	// Connect button; we use SelectionMessage so the user doesn't have
+	// to double-click.
 	fClusterList->SetSelectionMessage(new BMessage(kMsgClusterRowInvoked));
 	fClusterList->SetTarget(this);
-
-	BButton* clusterCloseButton = new BButton("clusterClose", "Close",
-		new BMessage(kMsgClusterClose));
 
 	BLayoutBuilder::Group<>(fClusterBox, B_VERTICAL, B_USE_SMALL_SPACING)
 		.SetInsets(B_USE_DEFAULT_SPACING, B_USE_BIG_INSETS,
 			B_USE_DEFAULT_SPACING, B_USE_DEFAULT_SPACING)
-		.Add(fClusterList)
-		.AddGroup(B_HORIZONTAL, B_USE_SMALL_SPACING)
-			.AddGlue()
-			.Add(clusterCloseButton)
-		.End();
+		.Add(fClusterList);
 	fClusterBox->Hide();
 
 	// --- status bar -----------------------------------------------------
@@ -233,7 +235,12 @@ VPNMapWindow::_BuildLayout()
 			.Add(fMap, 0.72f)
 			.AddGroup(B_VERTICAL, B_USE_DEFAULT_SPACING, 0.28f)
 				.Add(detailsBox)
-				.Add(fClusterBox)
+				// Cluster box and the trailing glue both have weight 1
+				// so they split the leftover space when the cluster is
+				// visible (roughly half each); when the cluster is
+				// hidden it contributes nothing and the glue takes
+				// everything, keeping Connect at the bottom.
+				.Add(fClusterBox, 1.0f)
 				.AddGlue()
 				.Add(fConnectButton)
 			.End()
@@ -510,10 +517,6 @@ VPNMapWindow::MessageReceived(BMessage* message)
 
 		case kMsgClusterRowInvoked:
 			_PickClusterRow();
-			break;
-
-		case kMsgClusterClose:
-			_HideCluster();
 			break;
 
 		case kMsgZoomIn:
