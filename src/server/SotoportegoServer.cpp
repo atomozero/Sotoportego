@@ -368,20 +368,20 @@ SotoportegoServer::_EnrichForBroadcast(BMessage* message)
 	// Only adds fields that aren't already present, since the backend may
 	// have set some of them (e.g. localIP/remoteIP). The map-relevant ones
 	// (home position, connected host) the backend never knows about.
-	if (message->FindString(kFieldHomeCountry, (const char**)NULL) != B_OK
-			&& fHomeCountry.Length() > 0)
+	// Presence checks use HasString/HasFloat: passing a NULL out-pointer to
+	// FindString writes through it when the field exists, so it's the wrong
+	// tool for "is this field present" and would crash the day one of these
+	// fields actually is.
+	if (!message->HasString(kFieldHomeCountry) && fHomeCountry.Length() > 0)
 		message->AddString(kFieldHomeCountry, fHomeCountry);
-	if (message->FindString(kFieldHomeIP, (const char**)NULL) != B_OK
-			&& fHomeIP.Length() > 0)
+	if (!message->HasString(kFieldHomeIP) && fHomeIP.Length() > 0)
 		message->AddString(kFieldHomeIP, fHomeIP);
-	float dummy;
-	if (message->FindFloat(kFieldHomeLat, &dummy) != B_OK
+	if (!message->HasFloat(kFieldHomeLat)
 			&& (fHomeLat != 0.0f || fHomeLon != 0.0f)) {
 		message->AddFloat(kFieldHomeLat, fHomeLat);
 		message->AddFloat(kFieldHomeLon, fHomeLon);
 	}
-	if (message->FindString(kFieldConnectedHost, (const char**)NULL) != B_OK
-			&& fConnectedHost.Length() > 0)
+	if (!message->HasString(kFieldConnectedHost) && fConnectedHost.Length() > 0)
 		message->AddString(kFieldConnectedHost, fConnectedHost);
 }
 
@@ -414,8 +414,12 @@ SotoportegoServer::_HandleHomeGeoResult(BMessage* message)
 	float lon = 0.0f;
 	message->FindString(GeoLookup::kFieldCountry, &country);
 	message->FindString(GeoLookup::kFieldQueryIP, &ip);
-	message->FindFloat(GeoLookup::kFieldLatitude, &lat);
-	message->FindFloat(GeoLookup::kFieldLongitude, &lon);
+	// GeoLookup only adds lat/lon when it has a real fix (it drops Null
+	// Island), so field presence -- not a 0.0 sentinel -- is the correct
+	// "did we get coordinates" test. Using presence also stops a legitimate
+	// coord of exactly 0 (equator / prime meridian) from being discarded.
+	bool haveLat = message->FindFloat(GeoLookup::kFieldLatitude, &lat) == B_OK;
+	bool haveLon = message->FindFloat(GeoLookup::kFieldLongitude, &lon) == B_OK;
 
 	bool changed = false;
 	if (country != NULL && fHomeCountry != country) {
@@ -426,8 +430,7 @@ SotoportegoServer::_HandleHomeGeoResult(BMessage* message)
 		fHomeIP = ip;
 		changed = true;
 	}
-	if (lat != 0.0f && lon != 0.0f
-			&& (lat != fHomeLat || lon != fHomeLon)) {
+	if (haveLat && haveLon && (lat != fHomeLat || lon != fHomeLon)) {
 		fHomeLat = lat;
 		fHomeLon = lon;
 		changed = true;
@@ -799,6 +802,12 @@ decode_base64(const char* in, std::string& out)
 			out.push_back((char)((buffer >> bits) & 0xFF));
 		}
 	}
+	// A valid base64 stream never ends with a lone 6-bit group: 6 leftover
+	// bits means the input length was 1 mod 4, i.e. truncated mid-quantum.
+	// Reject it rather than returning bytes that are silently missing their
+	// tail (matches the "invalid padding" promise in the comment above).
+	if (bits >= 6)
+		return false;
 	return true;
 }
 

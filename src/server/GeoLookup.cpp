@@ -226,13 +226,17 @@ lookup_thread(void* arg)
 		if (query.Length() > 0)
 			result.AddString(GeoLookup::kFieldQueryIP, query);
 		float lat = 0.0f;
-		// ip-api sends 0 for unknown locations; treat exact-zero as missing
-		// so we don't claim Null Island as anyone's home.
-		if (json_number(body, "lat", lat) && lat != 0.0f)
-			result.AddFloat(GeoLookup::kFieldLatitude, lat);
 		float lon = 0.0f;
-		if (json_number(body, "lon", lon) && lon != 0.0f)
+		bool haveLat = json_number(body, "lat", lat);
+		bool haveLon = json_number(body, "lon", lon);
+		// ip-api reports 0,0 (Null Island) for locations it can't place.
+		// Reject only when BOTH coords are exactly zero, so a legitimate
+		// point on the equator or the prime meridian (a single 0 coord) is
+		// still kept -- the old per-coord `!= 0` test dropped those.
+		if (haveLat && haveLon && !(lat == 0.0f && lon == 0.0f)) {
+			result.AddFloat(GeoLookup::kFieldLatitude, lat);
 			result.AddFloat(GeoLookup::kFieldLongitude, lon);
+		}
 	}
 	args->target.SendMessage(&result);
 
