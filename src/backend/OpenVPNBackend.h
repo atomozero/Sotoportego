@@ -16,6 +16,7 @@
 #include "VPNBackend.h"
 
 class BPath;
+class BMessageRunner;
 
 
 // Real OpenVPN backend.
@@ -73,7 +74,15 @@ private:
 
 	// --- lifecycle -----------------------------------------------------
 			bool				_SpawnOpenVPN(const VPNProfile& profile);
-			bool				_ConnectManagementSocket();
+		// Management-socket connect, run as a poll on the looper (via
+		// fMgmtPoll) rather than a blocking retry loop. This keeps the
+		// daemon responsive during the up-to-5s connect window and lets a
+		// Disconnect() that arrives mid-connect actually cancel it -- with
+		// the old blocking loop the looper could never dispatch it.
+			void				_BeginMgmtConnect();
+			void				_TryMgmtConnect();
+			void				_OnMgmtConnected();
+			void				_StopMgmtPoll();
 			void				_StartReader();
 			void				_StartStderrReader();
 			void				_Cleanup(bool wait);
@@ -157,6 +166,11 @@ private:
 			thread_id			fReader;		// -1 when no thread alive
 			thread_id			fStderrReader;	// -1 when no thread alive
 			bool				fStopRequested;	// true after Disconnect()
+		// Looper-driven poll for openvpn's management socket during the
+		// connecting phase. fMgmtPoll is NULL outside that phase; fMgmtAttempt
+		// counts probes so we give up after kMgmtConnectAttempts.
+			BMessageRunner*		fMgmtPoll;
+			int					fMgmtAttempt;
 	// Random one-shot password the daemon uses to authenticate to the
 	// openvpn management socket. Lives in a temp file passed to openvpn
 	// via --management; sent as the first line on the socket so any

@@ -25,6 +25,7 @@
 #include <FindDirectory.h>
 #include <Looper.h>
 #include <Message.h>
+#include <MessageRunner.h>
 #include <Messenger.h>
 #include <Path.h>
 
@@ -34,6 +35,9 @@
 // Private 'what' codes posted from worker contexts back to the looper.
 static const uint32 kMsgInternalEvent	= 'oEvt';
 static const uint32 kMsgReaderExited	= 'oRDr';
+// Posted to the looper (by BMessageRunner fMgmtPoll, and once immediately from
+// Connect) to drive one management-socket connect attempt.
+static const uint32 kMsgTryMgmtConnect	= 'oTMC';
 
 // Reader buffer size; openvpn lines are short.
 static const size_t kReaderBufferSize	= 2048;
@@ -195,7 +199,9 @@ OpenVPNBackend::OpenVPNBackend()
 	fMgmtPort(0),
 	fReader(-1),
 	fStderrReader(-1),
-	fStopRequested(false)
+	fStopRequested(false),
+	fMgmtPoll(NULL),
+	fMgmtAttempt(0)
 {
 	srand((unsigned)time(NULL) ^ (unsigned)find_thread(NULL));
 }
@@ -305,38 +311,15 @@ OpenVPNBackend::Connect(const VPNProfile& profile)
 	// the user would only see "could not reach openvpn management port".
 	_StartStderrReader();
 
-	if (!_ConnectManagementSocket()) {
-		_Cleanup(true);
-		_SetState(VPN_STATE_ERROR, "could not reach openvpn management port");
-		return B_ERROR;
-	}
-
-	// FIRST line on the socket MUST be the random session password from
-	// the file we passed via `--management ... <pwfile>`. openvpn closes
-	// the connection on any other first input. This is what stops a local
-	// process that races us to 127.0.0.1:<fMgmtPort> from driving the
-	// tunnel (signal SIGTERM, sniff credentials, swap state).
-	_SendCommand(fMgmtPassword.String());
-
-	// Subscribe to state and throughput, then let openvpn move past the
-	// management-hold gate. ROUTE_GATEWAY and PUSH_REPLY -- the values
-	// _ScanLogLine needs for the route fix-up -- are NOT collected via
-	// `log on` (it deadlocks openvpn on Haiku right after `hold release`)
-	// but via the stderr pipe wired up by _StartStderrReader() above.
-	//
-	// openvpn 2.6 on Haiku, with --management-query-passwords in play, can
-	// re-enter the management hold AFTER the first release (the management
-	// log shows "SUCCESS: hold release succeeded" immediately followed by
-	// a fresh ">HOLD:Waiting for hold release:0"). `hold off` sets the
-	// "no more holds" flag but doesn't release any in-flight one; the
-	// reader loop catches each >HOLD: and replies with `hold release`, so
-	// the connection keeps moving.
-	_SendCommand("state on");
-	_SendCommand("bytecount 1");
-	_SendCommand("hold off");
-	_SendCommand("hold release");
-
-	_StartReader();
+	// Connect to openvpn's management socket asynchronously. openvpn opens
+	// the listen socket shortly after we return from posix_spawnp, so we
+	// poll for it. Running this as a looper-driven poll (rather than a
+	// blocking retry loop that pins the looper for up to 5s) keeps the
+	// daemon answering GetStatus/Disconnect/other clients during the connect,
+	// and -- crucially -- lets a Disconnect() arriving mid-connect actually
+	// cancel it. The rest of the handshake happens in _OnMgmtConnected once
+	// the socket is up.
+	_BeginMgmtConnect();
 	return B_OK;
 }
 
@@ -447,6 +430,10 @@ OpenVPNBackend::MessageReceived(BMessage* message)
 			_HandleManagementEvent(event);
 			break;
 		}
+
+		case kMsgTryMgmtConnect:
+			_TryMgmtConnect();
+			break;
 
 		case kMsgReaderExited:
 			// The reader is gone; tear the rest down and report Disconnected
@@ -656,56 +643,86 @@ OpenVPNBackend::_SpawnOpenVPN(const VPNProfile& profile)
 }
 
 
-bool
-OpenVPNBackend::_ConnectManagementSocket()
+void
+OpenVPNBackend::_BeginMgmtConnect()
 {
-	for (int attempt = 0; attempt < kMgmtConnectAttempts; attempt++) {
-		// If a Disconnect() landed while we were sleeping in the retry
-		// loop, abandon the connect attempt. Without this the loop would
-		// burn through its full 5s timeout before the cleanup path could
-		// run, and the user would see the state stuck on "Connecting"
-		// long after they asked to cancel.
-		if (fStopRequested)
-			return false;
+	fMgmtAttempt = 0;
+	_StopMgmtPoll();
 
-		// If the child died while we were waiting, abort early. The exit
-		// status decodes the most useful "fast death" cases at a glance:
-		// 127 means our fork-child's execvp("openvpn", ...) failed (binary
-		// missing or not on PATH); a signal usually means a crash.
-		int status = 0;
-		pid_t reaped = waitpid(fPid, &status, WNOHANG);
-		if (reaped == fPid) {
-			if (WIFEXITED(status)) {
-				int code = WEXITSTATUS(status);
-				fprintf(stderr,
-					"[OpenVPN] child exited before management was ready "
-					"(exit=%d%s)\n", code,
-					code == 127 ? "; openvpn binary not found?" : "");
-			} else if (WIFSIGNALED(status)) {
-				fprintf(stderr,
-					"[OpenVPN] child exited before management was ready "
-					"(killed by signal %d)\n", WTERMSIG(status));
-			} else {
-				fprintf(stderr,
-					"[OpenVPN] child exited before management was ready "
-					"(status=0x%x)\n", status);
-			}
-			// Give the stderr-reader thread a moment to drain any final
-			// bytes openvpn flushed before dying, so the daemon log shows
-			// openvpn's reason rather than just our "child exited" line.
-			snooze(200000);
-			fPid = -1;
-			return false;
-		}
+	// A repeating runner drives one probe every kMgmtConnectInterval; the
+	// handler stops it on success, failure, or cancel. All ticks land on the
+	// looper, so the whole connect sequence stays single-threaded -- no locks
+	// on fSocket/fPid/fState, matching the rest of the backend.
+	BMessage tick(kMsgTryMgmtConnect);
+	fMgmtPoll = new BMessageRunner(BMessenger(this), &tick, kMgmtConnectInterval);
+	if (fMgmtPoll == NULL || fMgmtPoll->InitCheck() != B_OK) {
+		_StopMgmtPoll();
+		_Cleanup(true);
+		_SetState(VPN_STATE_ERROR, "could not start management poll");
+		return;
+	}
 
-		int fd = socket(AF_INET, SOCK_STREAM, 0);
-		if (fd < 0) {
-			snooze(kMgmtConnectInterval);
-			continue;
+	// Fire the first probe now rather than waiting a full interval; the runner
+	// covers every retry after that. PostMessage keeps it on the looper thread.
+	if (Looper() != NULL)
+		Looper()->PostMessage(kMsgTryMgmtConnect, this);
+}
+
+
+void
+OpenVPNBackend::_TryMgmtConnect()
+{
+	// A tick can still be queued after we already stopped the runner (deleting
+	// a BMessageRunner doesn't unsend an in-flight message); ignore stragglers.
+	if (fMgmtPoll == NULL)
+		return;
+
+	// Disconnect() landed between probes. This is the cancellation the old
+	// blocking loop could never honour: back then the looper was stuck inside
+	// Connect() and could not dispatch Disconnect at all.
+	if (fStopRequested) {
+		_StopMgmtPoll();
+		_Cleanup(true);
+		_SetState(VPN_STATE_DISCONNECTED, "cancelled");
+		return;
+	}
+
+	// openvpn died before its management socket came up (bad --dev-node, bad
+	// .ovpn, missing cert, exec failure). exit=127 means execvp failed; a
+	// signal usually means a crash. The stderr reader has already echoed the
+	// real reason on its own thread.
+	int status = 0;
+	pid_t reaped = waitpid(fPid, &status, WNOHANG);
+	if (reaped == fPid) {
+		if (WIFEXITED(status)) {
+			int code = WEXITSTATUS(status);
+			fprintf(stderr,
+				"[OpenVPN] child exited before management was ready "
+				"(exit=%d%s)\n", code,
+				code == 127 ? "; openvpn binary not found?" : "");
+		} else if (WIFSIGNALED(status)) {
+			fprintf(stderr,
+				"[OpenVPN] child exited before management was ready "
+				"(killed by signal %d)\n", WTERMSIG(status));
+		} else {
+			fprintf(stderr,
+				"[OpenVPN] child exited before management was ready "
+				"(status=0x%x)\n", status);
 		}
-		// Keep this fd out of every subsequent posix_spawn we do; otherwise
-		// a child like `route` or `ifconfig` could inherit a live socket to
-		// the management interface.
+		fPid = -1;
+		_StopMgmtPoll();
+		_Cleanup(true);
+		_SetState(VPN_STATE_ERROR, "openvpn exited before management was ready");
+		return;
+	}
+
+	// One non-blocking probe. On loopback a not-yet-listening port fails fast
+	// with ECONNREFUSED, so this never stalls the looper.
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (fd >= 0) {
+		// Keep this fd out of every subsequent posix_spawn we do; otherwise a
+		// child like `route` or `ifconfig` could inherit a live socket to the
+		// management interface.
 		fcntl(fd, F_SETFD, FD_CLOEXEC);
 
 		struct sockaddr_in addr;
@@ -716,12 +733,59 @@ OpenVPNBackend::_ConnectManagementSocket()
 
 		if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
 			fSocket = fd;
-			return true;
+			_StopMgmtPoll();
+			_OnMgmtConnected();
+			return;
 		}
 		close(fd);
-		snooze(kMgmtConnectInterval);
 	}
-	return false;
+
+	if (++fMgmtAttempt >= kMgmtConnectAttempts) {
+		_StopMgmtPoll();
+		_Cleanup(true);
+		_SetState(VPN_STATE_ERROR, "could not reach openvpn management port");
+	}
+	// Otherwise the runner fires again after kMgmtConnectInterval.
+}
+
+
+void
+OpenVPNBackend::_OnMgmtConnected()
+{
+	// FIRST line on the socket MUST be the random session password from the
+	// file we passed via `--management ... <pwfile>`. openvpn closes the
+	// connection on any other first input. This is what stops a local process
+	// that races us to 127.0.0.1:<fMgmtPort> from driving the tunnel (signal
+	// SIGTERM, sniff credentials, swap state).
+	_SendCommand(fMgmtPassword.String());
+
+	// Subscribe to state and throughput, then let openvpn move past the
+	// management-hold gate. ROUTE_GATEWAY and PUSH_REPLY -- the values
+	// _ScanLogLine needs for the route fix-up -- are NOT collected via
+	// `log on` (it deadlocks openvpn on Haiku right after `hold release`)
+	// but via the stderr pipe wired up by _StartStderrReader().
+	//
+	// openvpn 2.6 on Haiku, with --management-query-passwords in play, can
+	// re-enter the management hold AFTER the first release (the management
+	// log shows "SUCCESS: hold release succeeded" immediately followed by
+	// a fresh ">HOLD:Waiting for hold release:0"). `hold off` sets the
+	// "no more holds" flag but doesn't release any in-flight one; the reader
+	// loop catches each >HOLD: and replies with `hold release`, so the
+	// connection keeps moving.
+	_SendCommand("state on");
+	_SendCommand("bytecount 1");
+	_SendCommand("hold off");
+	_SendCommand("hold release");
+
+	_StartReader();
+}
+
+
+void
+OpenVPNBackend::_StopMgmtPoll()
+{
+	delete fMgmtPoll;
+	fMgmtPoll = NULL;
 }
 
 
@@ -867,6 +931,10 @@ OpenVPNBackend::_RunReaderLoop()
 void
 OpenVPNBackend::_Cleanup(bool wait)
 {
+	// Cancel any in-flight management-connect poll first, so a straggling
+	// tick can't fire a second teardown or spawn a reader after we're gone.
+	_StopMgmtPoll();
+
 	if (fSocket >= 0) {
 		// Closing kicks any blocked recv() in the reader thread, if it is
 		// still alive.
