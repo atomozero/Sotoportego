@@ -93,8 +93,12 @@ OpenVPNManagement::StateForName(const std::string& name)
 			|| name == "WAIT") {
 		return VPN_STATE_CONNECTING;
 	}
-	if (name == "AUTH" || name == "GET_CONFIG" || name == "ASSIGN_IP"
-			|| name == "ADD_ROUTES") {
+	if (name == "AUTH" || name == "AUTH_PENDING" || name == "GET_CONFIG"
+			|| name == "ASSIGN_IP" || name == "ADD_ROUTES") {
+		// AUTH_PENDING is openvpn 2.6's deferred/2FA-auth state: still
+		// progressing, not an error. Without it here it fell through to the
+		// unknown -> ERROR default and flipped the UI to "error" mid-handshake
+		// on servers that use web/2FA auth.
 		return VPN_STATE_AUTHENTICATING;
 	}
 	if (name == "CONNECTED")

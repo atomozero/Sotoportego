@@ -380,6 +380,7 @@ OpenVPNBackend::RemoteIP() const
 void
 OpenVPNBackend::SetCredentials(const BString& user, const BString& pass)
 {
+	BAutolock guard(fCredentialsLock);
 	fAuthUsername = user;
 	fAuthPassword = pass;
 }
@@ -901,17 +902,25 @@ OpenVPNBackend::_RunReaderLoop()
 			// I/O thread so we stay responsive to openvpn's prompts;
 			// everything else gets dispatched to the looper.
 			const OpenVPNEvent& event = events[i];
-			if (event.type == OPENVPN_EVENT_PASSWORD_REQUEST
-					&& fAuthUsername.Length() > 0) {
-				char line[1024];
-				snprintf(line, sizeof(line), "username \"%s\" \"%s\"",
-					event.realm.c_str(),
-					escape_arg(fAuthUsername).c_str());
-				_SendCommand(line);
-				snprintf(line, sizeof(line), "password \"%s\" \"%s\"",
-					event.realm.c_str(),
-					escape_arg(fAuthPassword).c_str());
-				_SendCommand(line);
+			if (event.type == OPENVPN_EVENT_PASSWORD_REQUEST) {
+				// Snapshot the credentials under the lock -- SetCredentials()
+				// / _Cleanup() can rewrite these BStrings from the looper
+				// thread, and a BString read racing a write is unsafe.
+				BString user, pass;
+				{
+					BAutolock guard(fCredentialsLock);
+					user = fAuthUsername;
+					pass = fAuthPassword;
+				}
+				if (user.Length() > 0) {
+					char line[1024];
+					snprintf(line, sizeof(line), "username \"%s\" \"%s\"",
+						event.realm.c_str(), escape_arg(user).c_str());
+					_SendCommand(line);
+					snprintf(line, sizeof(line), "password \"%s\" \"%s\"",
+						event.realm.c_str(), escape_arg(pass).c_str());
+					_SendCommand(line);
+				}
 			} else if (event.type == OPENVPN_EVENT_HOLD) {
 				// We already sent `hold off` at startup, so we should not
 				// normally see this. If openvpn does emit a hold (some
@@ -1008,8 +1017,11 @@ OpenVPNBackend::_Cleanup(bool wait)
 	}
 
 	fLocalIP = "";
-	fAuthUsername = "";
-	fAuthPassword = "";
+	{
+		BAutolock guard(fCredentialsLock);
+		fAuthUsername = "";
+		fAuthPassword = "";
+	}
 	// Clearing the harvest fields races with the stderr-reader thread on
 	// every reconnect; take fScanLock so a stale line in flight doesn't
 	// land in the next session.
@@ -1030,7 +1042,15 @@ OpenVPNBackend::_Cleanup(bool wait)
 void
 OpenVPNBackend::_SendCommand(const char* line)
 {
-	if (fSocket < 0 || line == NULL)
+	if (line == NULL)
+		return;
+
+	// Serialize with any concurrent send from the other thread: _SendCommand
+	// is called from both the looper (Disconnect, _OnMgmtConnected) and the
+	// reader thread (answering >PASSWORD/>HOLD), and two interleaved sends
+	// would splice two commands into one corrupt line.
+	BAutolock guard(fSendLock);
+	if (fSocket < 0)
 		return;
 
 	// Build the framed line once so a partial send can be resumed from the

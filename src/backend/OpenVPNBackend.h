@@ -129,6 +129,10 @@ private:
 			BString				fRemoteIP;
 			BString				fAuthUsername;
 			BString				fAuthPassword;
+		// Guards fAuthUsername/fAuthPassword. Written by SetCredentials() and
+		// _Cleanup() on the looper; read by the reader thread when it answers
+		// a >PASSWORD prompt.
+			BLocker				fCredentialsLock;
 	// Values harvested from openvpn's log stream and used by _InstallRoutes.
 	// `fOrigGatewayIface` is the path the kernel's route command wants
 	// (e.g. "/dev/net/iprowifi4965/0"); `fTunPeer` is the in-tunnel peer
@@ -161,6 +165,11 @@ private:
 	// Live process / connection. Owned by Connect()/_Cleanup().
 			pid_t				fPid;			// openvpn pid, -1 when none
 			int					fSocket;		// management TCP fd, -1 when none
+		// Serializes writes to fSocket. _SendCommand runs from both the looper
+		// (Disconnect, _OnMgmtConnected) and the reader thread (answering
+		// >PASSWORD/>HOLD); two interleaved sends would corrupt a line-oriented
+		// management command.
+			BLocker				fSendLock;
 			int					fStderrFd;		// child stderr read end, -1 when none
 			int					fMgmtPort;		// chosen at spawn time
 			thread_id			fReader;		// -1 when no thread alive
