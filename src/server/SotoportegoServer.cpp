@@ -202,6 +202,10 @@ SotoportegoServer::_HandleConnect(BMessage* message)
 	if (!pathOk) {
 		printf("[server] connect rejected: bad config path '%s'\n",
 			configPath.String());
+		// A VPNGate connect optimistically recorded the host before getting
+		// here; the connect never happened, so drop it or later broadcasts
+		// would advertise a session we never started.
+		fConnectedHost = "";
 		BMessage reply(kMsgStatusUpdate);
 		_FillStatus(&reply);
 		reply.AddString(kFieldDetail,
@@ -230,6 +234,12 @@ SotoportegoServer::_HandleConnect(BMessage* message)
 	status_t result = fBackend->Connect(profile);
 	if (result != B_OK) {
 		printf("[server] connect rejected: %s\n", strerror(result));
+		// Connect failed synchronously, so the backend never entered (and
+		// will never leave) an ERROR/DISCONNECTED state -- the notification
+		// path that normally clears fConnectedHost won't run. Clear it here
+		// so a failed VPNGate connect doesn't leave the map arced to a host
+		// with no live session.
+		fConnectedHost = "";
 		BMessage reply(kMsgStatusUpdate);
 		_FillStatus(&reply);
 		reply.AddString(kFieldDetail, strerror(result));
@@ -864,6 +874,9 @@ SotoportegoServer::_HandleConnectVPNGate(BMessage* message)
 
 	BString configPath = _WriteVPNGateConfig(host, base64);
 	if (configPath.Length() == 0) {
+		// Staging failed, so the connect won't happen -- undo the optimistic
+		// host record set just above.
+		fConnectedHost = "";
 		BMessage reply(kMsgStatusUpdate);
 		_FillStatus(&reply);
 		reply.AddString(kFieldDetail, "could not stage vpngate .ovpn");
