@@ -129,7 +129,12 @@ OpenVPNConfigParser::ParseText(const std::string& text, VPNProfile& profile)
 			profile.fServer = tokens[1].c_str();
 			if (tokens.size() >= 3 && !sawPort)
 				profile.fPort = (uint16)atoi(tokens[2].c_str());
-			if (tokens.size() >= 4 && !sawPort)
+			// The `sawPort` guard only governs the port: an explicit `port`
+			// directive must win over the port carried on `remote`. The
+			// transport protocol is independent, so the remote's inline
+			// proto (4th token) is always honoured, even when a `port`
+			// line appeared earlier.
+			if (tokens.size() >= 4)
 				profile.fProtocol = normalize_proto(tokens[3]).c_str();
 		} else if (directive == "proto" && tokens.size() >= 2) {
 			profile.fProtocol = normalize_proto(tokens[1]).c_str();
