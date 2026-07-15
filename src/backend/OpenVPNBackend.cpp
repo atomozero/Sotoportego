@@ -107,9 +107,10 @@ run_ifconfig(const char* const argv[], bool quiet = false)
 	pid_t pid = -1;
 	posix_spawn_file_actions_t actions;
 	posix_spawn_file_actions_t* actionsPtr = NULL;
-	if (quiet) {
-		if (posix_spawn_file_actions_init(&actions) == 0
-			&& posix_spawn_file_actions_addopen(&actions, STDERR_FILENO,
+	bool actionsInited = false;
+	if (quiet && posix_spawn_file_actions_init(&actions) == 0) {
+		actionsInited = true;
+		if (posix_spawn_file_actions_addopen(&actions, STDERR_FILENO,
 				"/dev/null", O_WRONLY, 0) == 0) {
 			actionsPtr = &actions;
 		}
@@ -117,8 +118,11 @@ run_ifconfig(const char* const argv[], bool quiet = false)
 
 	int rc = posix_spawnp(&pid, "ifconfig", actionsPtr, NULL,
 		(char* const*)argv, environ);
-	if (actionsPtr != NULL)
-		posix_spawn_file_actions_destroy(actionsPtr);
+	// Destroy whenever init succeeded, not just when we ended up passing the
+	// actions to spawn: if addopen failed, actionsPtr stayed NULL but the
+	// initialised object still had to be freed.
+	if (actionsInited)
+		posix_spawn_file_actions_destroy(&actions);
 
 	if (rc != 0) {
 		fprintf(stderr,
@@ -913,13 +917,16 @@ OpenVPNBackend::_RunReaderLoop()
 					pass = fAuthPassword;
 				}
 				if (user.Length() > 0) {
-					char line[1024];
-					snprintf(line, sizeof(line), "username \"%s\" \"%s\"",
-						event.realm.c_str(), escape_arg(user).c_str());
-					_SendCommand(line);
-					snprintf(line, sizeof(line), "password \"%s\" \"%s\"",
-						event.realm.c_str(), escape_arg(pass).c_str());
-					_SendCommand(line);
+					// Build with std::string, not a fixed char[1024]: a long
+					// password or realm would otherwise be silently truncated
+					// into a wrong management command and fail auth with no
+					// hint why.
+					std::string userCmd = "username \"" + event.realm + "\" \""
+						+ escape_arg(user) + "\"";
+					_SendCommand(userCmd.c_str());
+					std::string passCmd = "password \"" + event.realm + "\" \""
+						+ escape_arg(pass) + "\"";
+					_SendCommand(passCmd.c_str());
 				}
 			} else if (event.type == OPENVPN_EVENT_HOLD) {
 				// We already sent `hold off` at startup, so we should not
