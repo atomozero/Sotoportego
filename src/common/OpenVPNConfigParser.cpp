@@ -119,6 +119,10 @@ OpenVPNConfigParser::ParseText(const std::string& text, VPNProfile& profile)
 		profile.fPort = 1194;
 
 	bool sawPort = false;
+	// Configs with fail-over (ProtonVPN and others) carry several `remote`
+	// lines; openvpn uses them all, but for the profile's display fields we
+	// keep the FIRST one rather than letting the last overwrite it.
+	bool sawRemote = false;
 	// Name of the OpenVPN inline block we're currently inside (e.g. "ca" for
 	// a <ca>...</ca> section), or empty when not in one. Empty until we hit an
 	// opening tag.
@@ -160,19 +164,24 @@ OpenVPNConfigParser::ParseText(const std::string& text, VPNProfile& profile)
 		const std::string& directive = tokens[0];
 
 		if (directive == "remote" && tokens.size() >= 2) {
-			profile.fServer = tokens[1].c_str();
-			if (tokens.size() >= 3 && !sawPort) {
-				uint16 p = parse_port(tokens[2]);
-				if (p != 0)
-					profile.fPort = p;
+			// Only the first remote drives the display fields; later fail-over
+			// remotes are left to openvpn.
+			if (!sawRemote) {
+				profile.fServer = tokens[1].c_str();
+				if (tokens.size() >= 3 && !sawPort) {
+					uint16 p = parse_port(tokens[2]);
+					if (p != 0)
+						profile.fPort = p;
+				}
+				// The `sawPort` guard only governs the port: an explicit
+				// `port` directive must win over the port carried on
+				// `remote`. The transport protocol is independent, so the
+				// remote's inline proto (4th token) is always honoured, even
+				// when a `port` line appeared earlier.
+				if (tokens.size() >= 4)
+					profile.fProtocol = normalize_proto(tokens[3]).c_str();
+				sawRemote = true;
 			}
-			// The `sawPort` guard only governs the port: an explicit `port`
-			// directive must win over the port carried on `remote`. The
-			// transport protocol is independent, so the remote's inline
-			// proto (4th token) is always honoured, even when a `port`
-			// line appeared earlier.
-			if (tokens.size() >= 4)
-				profile.fProtocol = normalize_proto(tokens[3]).c_str();
 		} else if (directive == "proto" && tokens.size() >= 2) {
 			profile.fProtocol = normalize_proto(tokens[1]).c_str();
 		} else if (directive == "port" && tokens.size() >= 2) {
