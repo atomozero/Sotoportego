@@ -49,6 +49,7 @@ static const bigtime_t kCatalogueTTL	= 10 * 60 * 1000000LL;	// 10 minutes
 // _StageImportedConfig / _RemoveStagedConfig can use them too.
 static BString sanitize_filename(const char* name, const char* fallback);
 static bool imported_config_dir(BPath& out);
+static BString name_hash(const char* name);
 
 // Identifier the notification server uses to update the same toast rather
 // than stacking new ones for every transition.
@@ -513,8 +514,11 @@ SotoportegoServer::_StageImportedConfig(VPNProfile& profile)
 	if (create_directory(dir.Path(), 0755) != B_OK)
 		return;
 
+	// <sanitised-name>-<hash>.ovpn: the readable name aids debugging, the
+	// hash of the full name keeps two profiles whose names scrub to the same
+	// string from clobbering each other's copy.
 	BString safe = sanitize_filename(profile.fName.String(), "profile");
-	safe << ".ovpn";
+	safe << "-" << name_hash(profile.fName.String()) << ".ovpn";
 	BPath dest(dir.Path());
 	dest.Append(safe.String());
 
@@ -966,6 +970,24 @@ imported_config_dir(BPath& out)
 	out.Append("Sotoportego");
 	out.Append("configs");
 	return true;
+}
+
+
+// 32-bit FNV-1a of `name`, as 8 lowercase hex chars. Appended to a staged
+// config filename to disambiguate distinct profile names whose sanitised
+// forms would otherwise collide (e.g. "US #1" and "US.#1" both scrub to
+// "US__1"). Deterministic, so re-staging the same name overwrites its copy.
+static BString
+name_hash(const char* name)
+{
+	uint32 h = 2166136261u;
+	for (int32 i = 0; name != NULL && name[i] != '\0'; i++) {
+		h ^= (uint8)name[i];
+		h *= 16777619u;
+	}
+	BString out;
+	out.SetToFormat("%08x", (unsigned)h);
+	return out;
 }
 
 
