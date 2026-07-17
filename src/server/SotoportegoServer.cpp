@@ -121,7 +121,10 @@ SotoportegoServer::ReadyToRun()
 	// receive its own timer ticks. We run on the looper thread here, so the
 	// looper is already locked.
 	// TODO(milestone-2): choose the backend from the connecting profile's
-	// VPNBackendType instead of hard-coding OpenVPN.
+	// VPNBackendType instead of hard-coding OpenVPN. WireGuardBackend already
+	// exists as a skeleton (see src/backend/WireGuardBackend.*); wiring it in
+	// means swapping fBackend when a profile's type differs from the current
+	// one, since a backend is added to the looper once.
 	fBackend = new OpenVPNBackend();
 	AddHandler(fBackend);
 	fBackend->SetObserver(BMessenger(this));

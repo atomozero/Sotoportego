@@ -26,7 +26,9 @@ SRCS = \
 	../backend/VPNBackend.cpp \
 	../backend/OpenVPNBackend.cpp \
 	../backend/OpenVPNManagement.cpp \
+	../backend/WireGuardBackend.cpp \
 	../common/OpenVPNConfigParser.cpp \
+	../common/WireGuardConfigParser.cpp \
 	../common/CountryCentroids.cpp \
 	../common/VPNProfile.cpp \
 	../common/VPNState.cpp \
