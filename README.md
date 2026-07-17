@@ -210,6 +210,13 @@ policy and three colour-coded badges:
 * **Sessions** — current users; green at 30 or fewer, amber up to
   100, red beyond.
 
+Because the VPNGate catalogue is Japan-heavy, many country centroids
+land on the same spot at low zoom. Pins that share a screen position
+collapse into a single marker whose badge shows how many servers it
+covers; zoom in and they spread back into individual pins. Click a
+cluster and the side panel lists every server under it (host / ping /
+score) so you can pick one and Connect without zooming in.
+
 Click **Connect** with a pin selected, fill in the credentials prompt
 (vpngate's public servers usually accept `vpn` / `vpn`), and the
 daemon stages the `.ovpn` body cached on the pin and feeds it through
@@ -339,11 +346,6 @@ scripts/       verify-tunnel.sh — shell check that the tunnel is
 
 ## Roadmap
 
-* **Pin clustering at low zoom.** The VPNGate catalogue is
-  Japan-heavy, so the world view stacks dozens of pins on top of one
-  another around Tokyo. Group nearby pins into a single cluster
-  marker with a count badge while the zoom level is below the city
-  threshold, expand into individual pins as the user zooms in.
 * WireGuard backend behind the same `VPNBackend` interface.
 * IPv6 routing fix-up.
 * Reconnect / backoff handling with a visible countdown.
