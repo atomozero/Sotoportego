@@ -348,7 +348,10 @@ scripts/       verify-tunnel.sh — shell check that the tunnel is
 
 * WireGuard backend behind the same `VPNBackend` interface.
 * IPv6 routing fix-up.
-* Reconnect / backoff handling with a visible countdown.
+* Reconnect backoff with a visible countdown. openvpn's own soft-restart
+  is already surfaced as *Reconnecting* (and the default route refreshed
+  when the peer changes); what's missing is a client-side retry backoff
+  and a countdown in the UI.
 * IPSec.
 
 
