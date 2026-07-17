@@ -83,6 +83,13 @@ If Sotoportego saves you time, consider supporting development: [![Buy Me A Coff
   country* once a background geo-lookup (HTTP through the tunnel)
   returns; the same value is broadcast to subscribed clients so the
   GUI's status bar shows it alongside the connection state.
+* **Auto-reconnect with backoff** — if a session drops on its own (the
+  openvpn process exits without a user Disconnect), the daemon retries
+  the same profile on an exponential backoff (5, 10, 20, 40, 60s, up to
+  five attempts) and surfaces a live *Reconnecting — retry in Ns* countdown
+  in the header. A successful reconnect resets the budget; a user
+  Disconnect cancels it; an authentication failure is never retried, so a
+  bad password can't loop.
 * **CLI test client** — `sotoportego_cli` proves the IPC + backend seams
   with a one-shot connect / linger / disconnect round-trip.
 * **Deskbar replicant** — a small "world" glyph with an open/closed
@@ -348,10 +355,6 @@ scripts/       verify-tunnel.sh — shell check that the tunnel is
 
 * WireGuard backend behind the same `VPNBackend` interface.
 * IPv6 routing fix-up.
-* Reconnect backoff with a visible countdown. openvpn's own soft-restart
-  is already surfaced as *Reconnecting* (and the default route refreshed
-  when the peer changes); what's missing is a client-side retry backoff
-  and a countdown in the UI.
 * IPSec.
 
 
