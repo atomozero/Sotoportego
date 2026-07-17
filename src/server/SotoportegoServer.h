@@ -45,6 +45,12 @@ private:
 			void				_HandleGetStatus(BMessage* message);
 			void				_HandleSaveProfile(BMessage* message);
 			void				_HandleDeleteProfile(BMessage* message);
+
+	// Copy an imported OpenVPN .ovpn into the daemon's own config store and
+	// repoint the profile at the copy, so a saved profile keeps working after
+	// the user moves or deletes the file they imported from. No-op for
+	// non-OpenVPN profiles, an empty path, or a path already in the store.
+			void				_StageImportedConfig(VPNProfile& profile);
 			void				_HandleRequestVPNGate(BMessage* message);
 			void				_HandleConnectVPNGate(BMessage* message);
 

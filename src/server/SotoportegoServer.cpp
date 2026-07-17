@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 
 #include <Directory.h>
+#include <Entry.h>
 #include <File.h>
 #include <FindDirectory.h>
 #include <Path.h>
@@ -43,6 +44,10 @@ static const uint32 kMsgVPNGateFetched = 'sVGr';
 // Public-server churn is on the order of hours; an interactive user is more
 // likely to want a snappier "Refresh" than a perpetually up-to-the-minute list.
 static const bigtime_t kCatalogueTTL	= 10 * 60 * 1000000LL;	// 10 minutes
+
+// Defined below (near _WriteVPNGateConfig); forward-declared so the earlier
+// _StageImportedConfig can use it too.
+static BString sanitize_filename(const char* name, const char* fallback);
 
 // Identifier the notification server uses to update the same toast rather
 // than stacking new ones for every transition.
@@ -468,6 +473,10 @@ SotoportegoServer::_HandleSaveProfile(BMessage* message)
 	VPNProfile profile;
 	profile.Unarchive(archive);
 
+	// Take our own copy of the referenced .ovpn so the profile survives the
+	// user moving or deleting the file they imported from.
+	_StageImportedConfig(profile);
+
 	status_t result = fProfiles.Save(profile);
 	if (result != B_OK) {
 		printf("[server] save-profile '%s' failed: %s\n",
@@ -478,6 +487,72 @@ SotoportegoServer::_HandleSaveProfile(BMessage* message)
 	printf("[server] saved profile '%s' (%zu total)\n",
 		profile.fName.String(), fProfiles.Count());
 	_BroadcastProfileList();
+}
+
+
+void
+SotoportegoServer::_StageImportedConfig(VPNProfile& profile)
+{
+	if (profile.fBackendType != VPN_BACKEND_OPENVPN
+			|| profile.fConfigPath.Length() == 0)
+		return;
+
+	BPath dir;
+	if (find_directory(B_USER_SETTINGS_DIRECTORY, &dir) != B_OK)
+		return;
+	dir.Append("Sotoportego");
+	dir.Append("configs");
+
+	// Already in our store? Don't re-copy (e.g. a re-save of an
+	// already-imported profile, or the very file we staged last time). The
+	// trailing slash keeps a sibling dir with the same prefix from matching.
+	BString storeDir(dir.Path());
+	storeDir << "/";
+	if (profile.fConfigPath.StartsWith(storeDir))
+		return;
+
+	if (create_directory(dir.Path(), 0755) != B_OK)
+		return;
+
+	BString safe = sanitize_filename(profile.fName.String(), "profile");
+	safe << ".ovpn";
+	BPath dest(dir.Path());
+	dest.Append(safe.String());
+
+	BFile src(profile.fConfigPath.String(), B_READ_ONLY);
+	if (src.InitCheck() != B_OK) {
+		// Can't read the source: keep the original path so the profile is at
+		// least usable while the source file still exists.
+		printf("[server] stage-config: cannot read '%s'\n",
+			profile.fConfigPath.String());
+		return;
+	}
+	BFile out(dest.Path(), B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+	if (out.InitCheck() != B_OK) {
+		printf("[server] stage-config: cannot write '%s'\n", dest.Path());
+		return;
+	}
+
+	char buffer[4096];
+	ssize_t got;
+	while ((got = src.Read(buffer, sizeof(buffer))) > 0) {
+		if (out.Write(buffer, got) != got) {
+			printf("[server] stage-config: write error to '%s'\n", dest.Path());
+			out.Unset();
+			BEntry(dest.Path()).Remove();
+			return;
+		}
+	}
+	if (got < 0) {
+		printf("[server] stage-config: read error from '%s'\n",
+			profile.fConfigPath.String());
+		out.Unset();
+		BEntry(dest.Path()).Remove();
+		return;
+	}
+
+	profile.fConfigPath = dest.Path();
+	printf("[server] staged imported config -> %s\n", dest.Path());
 }
 
 
@@ -819,6 +894,26 @@ decode_base64(const char* in, std::string& out)
 }
 
 
+// Reduce a name to a safe filename component: ASCII alnum plus dot, dash and
+// underscore; anything else becomes '_' so a crafted name can't walk out of
+// the target directory ("../../etc/passwd"). Falls back to `fallback` when the
+// input reduces to nothing.
+static BString
+sanitize_filename(const char* name, const char* fallback)
+{
+	BString safe;
+	for (int32 i = 0; name != NULL && name[i] != '\0'; i++) {
+		char c = name[i];
+		bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+			|| (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
+		safe << (ok ? c : '_');
+	}
+	if (safe.Length() == 0)
+		safe = fallback;
+	return safe;
+}
+
+
 BString
 SotoportegoServer::_WriteVPNGateConfig(const char* host,
 	const char* base64Body)
@@ -833,18 +928,9 @@ SotoportegoServer::_WriteVPNGateConfig(const char* host,
 	dir.Append("vpngate");
 	create_directory(dir.Path(), 0755);
 
-	// Sanitise the host name into a filename: only ASCII alnum, dot, dash,
-	// underscore. Anything else gets replaced with '_' so we can't be
-	// tricked into walking out of the cache dir with "../../etc/passwd".
-	BString safe;
-	for (int32 i = 0; host[i] != '\0'; i++) {
-		char c = host[i];
-		bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-			|| (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
-		safe << (ok ? c : '_');
-	}
-	if (safe.Length() == 0)
-		safe = "server";
+	// Name the cache file after the host (see sanitize_filename for why the
+	// scrub matters).
+	BString safe = sanitize_filename(host, "server");
 	safe << ".ovpn";
 
 	BPath out(dir.Path());
