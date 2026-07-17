@@ -41,6 +41,8 @@ public:
 private:
 			void				_HandleConnect(BMessage* message);
 			void				_HandleDisconnect(BMessage* message);
+	// Point fBackend at the instance for `backendType` (OpenVPN or WireGuard).
+			void				_SelectBackend(VPNBackendType backendType);
 			void				_HandleSubscribe(BMessage* message);
 			void				_HandleUnsubscribe(BMessage* message);
 			void				_HandleGetStatus(BMessage* message);
@@ -119,7 +121,12 @@ private:
 
 			BMessenger			_ClientFrom(BMessage* message) const;
 
+	// One instance per backend type, both attached to the looper at startup;
+	// fBackend points at whichever the last connect selected (see
+	// _SelectBackend). Only one is ever live at a time.
 			VPNBackend*				fBackend;
+			VPNBackend*				fOpenVPN;
+			VPNBackend*				fWireGuard;
 			ProfileStore			fProfiles;
 			std::vector<BMessenger>	fClients;
 

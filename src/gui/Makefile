@@ -31,6 +31,7 @@ SRCS = \
 	TileCache.cpp \
 	CoastlineData.cpp \
 	../common/OpenVPNConfigParser.cpp \
+	../common/WireGuardConfigParser.cpp \
 	../common/VPNProfile.cpp \
 	../common/VPNState.cpp \
 	../common/VPNStats.cpp

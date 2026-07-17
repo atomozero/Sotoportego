@@ -37,6 +37,7 @@
 #include "DeskbarIcon.h"
 #include "HeaderView.h"
 #include "OpenVPNConfigParser.h"
+#include "WireGuardConfigParser.h"
 #include "VPNMapWindow.h"
 #include "VPNProfile.h"
 #include "VPNProtocol.h"
@@ -878,22 +879,39 @@ MainWindow::_ImportFile(const entry_ref& ref)
 		return;
 
 	VPNProfile profile;
-	profile.fBackendType = VPN_BACKEND_OPENVPN;
-	if (!OpenVPNConfigParser::ParseFile(path.Path(), profile)) {
-		BAlert* alert = new BAlert("importFailed",
-			"Could not read the selected .ovpn file.", "OK");
-		alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
-		alert->Go();
-		return;
-	}
 
-	if (profile.fServer.Length() == 0) {
-		BAlert* alert = new BAlert("importWarning",
-			"The .ovpn file has no 'remote' directive; the profile was "
-			"saved but cannot be used until you fix the file.",
-			"OK");
-		alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
-		alert->Go();
+	// Sniff the file: a complete WireGuard .conf ([Interface] key + a [Peer]
+	// with an Endpoint) is imported as WireGuard, otherwise we treat it as an
+	// OpenVPN .ovpn. The daemon re-parses the file at connect time; here we
+	// only fill the display fields.
+	WireGuardConfig wg;
+	if (WireGuardConfigParser::ParseFile(path.Path(), wg) && wg.IsComplete()) {
+		profile.fBackendType = VPN_BACKEND_WIREGUARD;
+		profile.fServer = wg.peer.endpointHost;
+		profile.fPort = wg.peer.endpointPort;
+		profile.fProtocol = "udp";
+		profile.fConfigPath = path.Path();
+		BString name(path.Leaf());
+		if (name.IFindLast(".conf") == name.Length() - 5)
+			name.Truncate(name.Length() - 5);
+		profile.fName = name;
+	} else {
+		profile.fBackendType = VPN_BACKEND_OPENVPN;
+		if (!OpenVPNConfigParser::ParseFile(path.Path(), profile)) {
+			BAlert* alert = new BAlert("importFailed",
+				"Could not read the selected config file.", "OK");
+			alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+			alert->Go();
+			return;
+		}
+		if (profile.fServer.Length() == 0) {
+			BAlert* alert = new BAlert("importWarning",
+				"The .ovpn file has no 'remote' directive; the profile was "
+				"saved but cannot be used until you fix the file.",
+				"OK");
+			alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+			alert->Go();
+		}
 	}
 
 	// Confirm before silently overwriting an existing profile that happens

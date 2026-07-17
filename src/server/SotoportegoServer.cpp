@@ -24,6 +24,7 @@
 #include "GeoLookup.h"
 #include "OpenVPNBackend.h"
 #include "VPNGateFetcher.h"
+#include "WireGuardBackend.h"
 #include "VPNProfile.h"
 #include "VPNProtocol.h"
 #include "VPNStats.h"
@@ -80,6 +81,8 @@ SotoportegoServer::SotoportegoServer()
 	:
 	BApplication(kServerSignature),
 	fBackend(NULL),
+	fOpenVPN(NULL),
+	fWireGuard(NULL),
 	fProfiles(),
 	fLastState(VPN_STATE_DISCONNECTED),
 	fLastServerSummary(),
@@ -117,23 +120,28 @@ SotoportegoServer::~SotoportegoServer()
 void
 SotoportegoServer::ReadyToRun()
 {
-	// Create the single backend instance and attach it to our looper so it can
-	// receive its own timer ticks. We run on the looper thread here, so the
-	// looper is already locked.
-	// TODO(milestone-2): choose the backend from the connecting profile's
-	// VPNBackendType instead of hard-coding OpenVPN. WireGuardBackend already
-	// exists as a skeleton (see src/backend/WireGuardBackend.*); wiring it in
-	// means swapping fBackend when a profile's type differs from the current
-	// one, since a backend is added to the looper once.
-	fBackend = new OpenVPNBackend();
-	AddHandler(fBackend);
-	fBackend->SetObserver(BMessenger(this));
+	// One instance per backend type, both attached to the looper so each can
+	// receive its own timer ticks and post events back to us. Only one is ever
+	// live at a time; _HandleConnect points fBackend at the right one per
+	// profile. We run on the looper thread here, so it's already locked.
+	fOpenVPN = new OpenVPNBackend();
+	AddHandler(fOpenVPN);
+	fOpenVPN->SetObserver(BMessenger(this));
+
+	fWireGuard = new WireGuardBackend();
+	AddHandler(fWireGuard);
+	fWireGuard->SetObserver(BMessenger(this));
+
+	// Default active backend until a profile selects one, so GetStatus before
+	// any connect returns a sane Disconnected snapshot.
+	fBackend = fOpenVPN;
 
 	// If the previous run crashed mid-session it left the default route
 	// pointing at a dead tun device, which means the user has no internet
 	// right now. Roll the routes back to whatever the session file recorded
 	// so they're online again before they have to look up what we did.
-	fBackend->RecoverIfCrashed();
+	fOpenVPN->RecoverIfCrashed();
+	fWireGuard->RecoverIfCrashed();
 
 	// Kick off the first "where are we without a VPN?" lookup. The answer
 	// lands later as kMsgHomeGeoResult and is folded into every subsequent
@@ -220,6 +228,14 @@ SotoportegoServer::MessageReceived(BMessage* message)
 
 
 void
+SotoportegoServer::_SelectBackend(VPNBackendType backendType)
+{
+	fBackend = (backendType == VPN_BACKEND_WIREGUARD && fWireGuard != NULL)
+		? fWireGuard : fOpenVPN;
+}
+
+
+void
 SotoportegoServer::_HandleConnect(BMessage* message)
 {
 	if (fBackend == NULL)
@@ -229,6 +245,23 @@ SotoportegoServer::_HandleConnect(BMessage* message)
 	BMessage archive;
 	if (message->FindMessage(kFieldProfile, &archive) == B_OK)
 		profile.Unarchive(archive);
+
+	// Refuse a second connect while a session is already live -- the user must
+	// disconnect first. Each backend guards its own Connect, but that wouldn't
+	// catch starting a *different* backend on top of a live one.
+	VPNState active = fBackend->State();
+	if (active != VPN_STATE_DISCONNECTED && active != VPN_STATE_ERROR) {
+		BMessage reply(kMsgStatusUpdate);
+		_FillStatus(&reply);
+		reply.AddString(kFieldDetail, "already connected; disconnect first");
+		BMessenger client = _ClientFrom(message);
+		if (client.IsValid())
+			client.SendMessage(&reply);
+		return;
+	}
+
+	// Route this connect to the backend the profile asks for.
+	_SelectBackend(profile.fBackendType);
 
 	// Validate the .ovpn path before handing it to the backend. Anyone on
 	// the local box can send us a Connect with an arbitrary `fConfigPath`,
@@ -552,8 +585,9 @@ SotoportegoServer::_HandleSaveProfile(BMessage* message)
 void
 SotoportegoServer::_StageImportedConfig(VPNProfile& profile)
 {
-	if (profile.fBackendType != VPN_BACKEND_OPENVPN
-			|| profile.fConfigPath.Length() == 0)
+	// Any file-backed profile (OpenVPN .ovpn or WireGuard .conf) gets its
+	// config copied into our store; only in-memory profiles are exempt.
+	if (profile.fConfigPath.Length() == 0)
 		return;
 
 	BPath dir;
@@ -902,6 +936,9 @@ SotoportegoServer::_AttemptReconnect()
 
 	VPNProfile profile;
 	profile.Unarchive(fReconnectProfile);
+
+	// Re-select the backend in case the last user action switched types.
+	_SelectBackend(profile.fBackendType);
 
 	if (fReconnectUser.Length() > 0 || fReconnectPass.Length() > 0)
 		fBackend->SetCredentials(fReconnectUser, fReconnectPass);
