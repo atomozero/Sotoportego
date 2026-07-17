@@ -35,10 +35,14 @@ If Sotoportego saves you time, consider supporting development: [![Buy Me A Coff
   brings it up before openvpn starts (the Haiku port can't allocate the
   tun device dynamically), then installs the pushed default route via
   the in-tunnel peer so traffic actually flows through the tunnel.
-* **Profile management** — import any `.ovpn` file through a file panel.
-  The daemon persists the list at
-  `~/config/settings/Sotoportego/profiles` and broadcasts changes to
-  every subscribed client.
+* **Profile management** — import any `.ovpn` file (or a whole folder of
+  them at once) through a file panel. The daemon takes its own copy of
+  each config under `~/config/settings/Sotoportego/configs/` and persists
+  the profile list at `~/config/settings/Sotoportego/profiles`, so a
+  profile keeps working even after you move or delete the file you
+  imported from; deleting the profile removes its copy. Provider bundles
+  such as ProtonVPN's downloadable OpenVPN configs drop straight in.
+  Changes are broadcast to every subscribed client.
 * **Privilege-separated design** — a background daemon
   (`B_BACKGROUND_APP`, hidden from Deskbar) owns the VPN lifecycle; the
   GUI and CLI are user-facing clients that talk to it over `BMessage`.
@@ -137,9 +141,11 @@ The produced binaries land in each subdirectory's
 
 The GUI launches the daemon automatically via `be_roster`. From there:
 
-1. Click **+** to import an `.ovpn` profile. The daemon parses
-   `remote`, `proto`, `port` and `auth-user-pass` and stores the
-   profile; the file path stays where you picked it from.
+1. Click **+** to import one or more `.ovpn` profiles. The daemon parses
+   `remote`, `proto`, `port` and `auth-user-pass`, takes its own copy of
+   the config under `~/config/settings/Sotoportego/configs/`, and stores
+   the profile — so you can delete the file you imported from afterwards.
+   See *Import from ProtonVPN* below for provider configs.
 2. Select a profile in the list. The **Server** box on the right shows
    the host, backend, protocol and (after Connect) the tunnel-assigned
    **Tunnel IP**.
@@ -160,6 +166,28 @@ on its own and stays live whether or not the main window is open; a
 left click on it shows your profile list, lets you connect with two
 clicks, and offers Disconnect / *Open Sotoportego…* / *Remove from
 Deskbar* below. The icon comes back automatically after a reboot.
+
+### Import from ProtonVPN (and other providers)
+
+Sotoportego imports the standard OpenVPN config files that ProtonVPN —
+and most commercial providers — let you download, so there's no separate
+provider account to wire in.
+
+1. On the ProtonVPN dashboard open **Downloads → OpenVPN configuration
+   files** and download the servers you want (per-country or per-server,
+   UDP or TCP). You can grab a whole batch at once.
+2. In Sotoportego click **+** and select one file or many together. Each
+   becomes a profile, and because the daemon keeps its own copy you can
+   delete the downloads afterwards.
+3. Click **Connect** and enter the **OpenVPN / IKEv2 credentials** shown
+   on the ProtonVPN dashboard (under *Account*) — **not** your Proton
+   login. Tick **Remember password** to skip the prompt next time.
+
+Provider configs often list several `remote` lines for fail-over:
+openvpn uses them all and the profile is named after the first. The
+crypto (`<ca>`, `<tls-crypt>`, cipher) is handled by openvpn itself from
+the config, so any suite your Haiku `openvpn` build supports will
+connect.
 
 ### Browse servers on a map
 
