@@ -10,12 +10,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <MessageRunner.h>
 
 #include "TunDevice.h"
 #include "VPNProfile.h"
+#include "WireGuardCrypto.h"
 
 
 // Decode standard base64 into `out` (capacity `outCap`), reporting the byte
@@ -80,6 +82,14 @@ WireGuardBackend::WireGuardBackend()
 	memset(fPrivateKey, 0, sizeof(fPrivateKey));
 	memset(fPeerPublicKey, 0, sizeof(fPeerPublicKey));
 	memset(fPresharedKey, 0, sizeof(fPresharedKey));
+	memset(fEphemeralPrivate, 0, sizeof(fEphemeralPrivate));
+	memset(fEphemeralPublic, 0, sizeof(fEphemeralPublic));
+	memset(fChainingKey, 0, sizeof(fChainingKey));
+	memset(fHash, 0, sizeof(fHash));
+	fSenderIndex = 0;
+	fReceiverIndex = 0;
+	memset(fSendKey, 0, sizeof(fSendKey));
+	memset(fRecvKey, 0, sizeof(fRecvKey));
 }
 
 
@@ -151,16 +161,22 @@ WireGuardBackend::Connect(const VPNProfile& profile)
 		return B_ERROR;
 	}
 
-	// TODO(wireguard): the handshake and data plane go here --
-	//   if (!_PerformHandshake()) { _Cleanup(); _SetState(ERROR, ...); return B_ERROR; }
-	//   _StartReader();  // + arm rekey / keepalive timers via fTimer
-	//   return B_OK;     // CONNECTED is posted from the reader once keys are live
-	//
-	// Steps 1-2 are in place (keys decoded, tun up, UDP bound), but without
-	// the Noise IK handshake we can't carry traffic, so tear the plumbing
-	// back down and report clearly rather than leaving a half-open interface.
+	// Step 3: the Noise IK handshake. On success we hold the transport keys.
+	if (!_PerformHandshake()) {
+		_Cleanup();
+		_SetState(VPN_STATE_ERROR, "WireGuard handshake failed");
+		return B_ERROR;
+	}
+	printf("[WireGuard] handshake OK (session %u <-> %u)\n",
+		(unsigned)fSenderIndex, (unsigned)fReceiverIndex);
+
+	// TODO(wireguard) step 4: _StartReader() forwards tun<->UDP with fSendKey/
+	// fRecvKey and arms the rekey/keepalive timers, ending in CONNECTED and a
+	// B_OK return. Until then the handshake is proven but no traffic flows, so
+	// tear the plumbing down rather than claim a live tunnel.
 	_Cleanup();
-	_SetState(VPN_STATE_ERROR, "WireGuard handshake not yet implemented");
+	_SetState(VPN_STATE_ERROR,
+		"WireGuard transport not yet implemented (handshake OK)");
 	return B_ERROR;
 }
 
@@ -337,13 +353,167 @@ WireGuardBackend::_OpenUdpSocket()
 }
 
 
+static void
+store32_le(uint8* p, uint32 v)
+{
+	p[0] = (uint8)v; p[1] = (uint8)(v >> 8);
+	p[2] = (uint8)(v >> 16); p[3] = (uint8)(v >> 24);
+}
+
+
+static uint32
+load32_le(const uint8* p)
+{
+	return (uint32)p[0] | ((uint32)p[1] << 8) | ((uint32)p[2] << 16)
+		| ((uint32)p[3] << 24);
+}
+
+
+// H = Hash(H || data)
+static void
+mix_hash(uint8 h[32], const void* data, size_t len)
+{
+	wg::Blake2s s;
+	wg::HashInit(s);
+	wg::HashUpdate(s, h, 32);
+	wg::HashUpdate(s, data, len);
+	wg::HashFinal(s, h);
+}
+
+
 bool
 WireGuardBackend::_PerformHandshake()
 {
-	// TODO(wireguard): Noise IK handshake -- initiation + response, deriving
-	// the transport keys (Curve25519 / BLAKE2s / ChaCha20-Poly1305 via
-	// libsodium). Retransmit the initiation on fTimer until the response lands.
-	return false;
+	// WireGuard's Noise_IKpsk2 handshake, following the whitepaper. Every
+	// primitive below is validated against its test vector; the assembly here
+	// is what still needs proving against a real peer.
+	static const char kConstruction[] = "Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s";
+	static const char kIdentifier[] = "WireGuard v1 zx2c4 Jason@zx2c4.com";
+	static const uint8 kLabelMac1[8] = { 'm', 'a', 'c', '1', '-', '-', '-', '-' };
+
+	uint8 staticPub[32];
+	if (!wg::DhPublic(fPrivateKey, staticPub))
+		return false;
+
+	// C = Hash(CONSTRUCTION); H = Hash(Hash(C || IDENTIFIER) || Spub_r)
+	wg::Hash(kConstruction, strlen(kConstruction), fChainingKey);
+	{
+		wg::Blake2s s;
+		wg::HashInit(s);
+		wg::HashUpdate(s, fChainingKey, 32);
+		wg::HashUpdate(s, kIdentifier, strlen(kIdentifier));
+		wg::HashFinal(s, fHash);
+	}
+	mix_hash(fHash, fPeerPublicKey, 32);
+
+	// --- initiation ---
+	if (!wg::DhGenerate(fEphemeralPrivate, fEphemeralPublic))
+		return false;
+	wg::Kdf1(fChainingKey, fEphemeralPublic, 32, fChainingKey);
+	mix_hash(fHash, fEphemeralPublic, 32);
+
+	uint8 dh[32];
+	uint8 key[32];
+
+	// encrypted_static
+	if (!wg::Dh(fEphemeralPrivate, fPeerPublicKey, dh))
+		return false;
+	wg::Kdf2(fChainingKey, dh, 32, fChainingKey, key);
+	uint8 encStatic[48];
+	if (!wg::AeadEncrypt(key, 0, staticPub, 32, fHash, 32, encStatic))
+		return false;
+	mix_hash(fHash, encStatic, 48);
+
+	// encrypted_timestamp
+	if (!wg::Dh(fPrivateKey, fPeerPublicKey, dh))
+		return false;
+	wg::Kdf2(fChainingKey, dh, 32, fChainingKey, key);
+	uint8 timestamp[12];
+	wg::Tai64n(timestamp);
+	uint8 encTs[28];
+	if (!wg::AeadEncrypt(key, 0, timestamp, 12, fHash, 32, encTs))
+		return false;
+	mix_hash(fHash, encTs, 28);
+
+	// Assemble the 148-byte initiation message.
+	if (!wg::RandomBytes(&fSenderIndex, sizeof(fSenderIndex)))
+		return false;
+	uint8 msg[148];
+	memset(msg, 0, sizeof(msg));
+	msg[0] = 1;								// message_type
+	store32_le(msg + 4, fSenderIndex);
+	memcpy(msg + 8, fEphemeralPublic, 32);
+	memcpy(msg + 40, encStatic, 48);
+	memcpy(msg + 88, encTs, 28);
+	// mac1 = MAC(Hash(LABEL_MAC1 || Spub_r), msg[0:116]); mac2 stays zero.
+	uint8 mac1Key[32];
+	{
+		wg::Blake2s s;
+		wg::HashInit(s);
+		wg::HashUpdate(s, kLabelMac1, sizeof(kLabelMac1));
+		wg::HashUpdate(s, fPeerPublicKey, 32);
+		wg::HashFinal(s, mac1Key);
+	}
+	wg::Mac16(mac1Key, msg, 116, msg + 116);
+
+	if (send(fUdpSocket, msg, sizeof(msg), 0) != (ssize_t)sizeof(msg)) {
+		fprintf(stderr, "[WireGuard] failed to send handshake initiation\n");
+		return false;
+	}
+
+	// --- response ---
+	// Bounded blocking wait. TODO(wireguard) step 4: move onto the reader
+	// thread and retransmit the initiation until this lands.
+	struct timeval tv;
+	tv.tv_sec = 5;
+	tv.tv_usec = 0;
+	setsockopt(fUdpSocket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+	uint8 resp[256];
+	ssize_t got = recv(fUdpSocket, resp, sizeof(resp), 0);
+	if (got != 92 || resp[0] != 2) {
+		fprintf(stderr,
+			"[WireGuard] no/invalid handshake response (got %ld bytes)\n",
+			(long)got);
+		return false;
+	}
+	if (load32_le(resp + 8) != fSenderIndex) {
+		fprintf(stderr, "[WireGuard] handshake response index mismatch\n");
+		return false;
+	}
+	fReceiverIndex = load32_le(resp + 4);
+	const uint8* peerEphemeral = resp + 12;
+	const uint8* encNothing = resp + 44;	// 16 bytes: empty plaintext + tag
+
+	wg::Kdf1(fChainingKey, peerEphemeral, 32, fChainingKey);
+	mix_hash(fHash, peerEphemeral, 32);
+	if (!wg::Dh(fEphemeralPrivate, peerEphemeral, dh))	// ee
+		return false;
+	wg::Kdf1(fChainingKey, dh, 32, fChainingKey);
+	if (!wg::Dh(fPrivateKey, peerEphemeral, dh))		// se
+		return false;
+	wg::Kdf1(fChainingKey, dh, 32, fChainingKey);
+
+	uint8 psk[32];
+	if (fHavePresharedKey)
+		memcpy(psk, fPresharedKey, 32);
+	else
+		memset(psk, 0, 32);
+	uint8 tau[32];
+	wg::Kdf3(fChainingKey, psk, 32, fChainingKey, tau, key);
+	mix_hash(fHash, tau, 32);
+
+	uint8 empty[1];
+	if (!wg::AeadDecrypt(key, 0, encNothing, 16, fHash, 32, empty)) {
+		fprintf(stderr,
+			"[WireGuard] handshake response failed to authenticate\n");
+		return false;
+	}
+	mix_hash(fHash, encNothing, 16);
+
+	// Derive transport keys: initiator send/recv = KDF2(C, empty).
+	wg::Kdf2(fChainingKey, NULL, 0, fSendKey, fRecvKey);
+	return true;
 }
 
 

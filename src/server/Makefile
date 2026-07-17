@@ -28,6 +28,7 @@ SRCS = \
 	../backend/OpenVPNManagement.cpp \
 	../backend/TunDevice.cpp \
 	../backend/WireGuardBackend.cpp \
+	../backend/WireGuardCrypto.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/WireGuardConfigParser.cpp \
 	../common/CountryCentroids.cpp \
@@ -41,10 +42,11 @@ RDEFS = Sotoportego_server.rdef
 RSRCS =
 
 # Libraries to link against. libbe provides BApplication / BMessage / etc.;
-# libnetwork carries the POSIX socket API the OpenVPN backend uses to talk to
-# the management interface. $(STDCPPLIBS) pulls in libstdc++/libsupc++ — the
-# makefile-engine links with `cc`, which does not add the C++ runtime itself.
-LIBS = be network $(STDCPPLIBS)
+# libnetwork carries the POSIX socket API the backends use; libcrypto (OpenSSL)
+# provides X25519 and ChaCha20-Poly1305 for the WireGuard handshake.
+# $(STDCPPLIBS) pulls in libstdc++/libsupc++ — the makefile-engine links with
+# `cc`, which does not add the C++ runtime itself.
+LIBS = be network crypto $(STDCPPLIBS)
 
 # Additional paths to directories following the standard libXXX.so layout.
 LIBPATHS =

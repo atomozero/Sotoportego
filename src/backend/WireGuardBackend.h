@@ -87,6 +87,19 @@ private:
 			uint8				fPeerPublicKey[32];
 			uint8				fPresharedKey[32];
 			bool				fHavePresharedKey;
+
+	// Noise handshake state (filled by _PerformHandshake).
+			uint8				fEphemeralPrivate[32];
+			uint8				fEphemeralPublic[32];
+			uint8				fChainingKey[32];
+			uint8				fHash[32];
+			uint32				fSenderIndex;	// our session index (Ii)
+			uint32				fReceiverIndex;	// peer's session index (Ir)
+	// Transport keys derived once the handshake completes; consumed by the
+	// data-plane reader in step 4.
+			uint8				fSendKey[32];
+			uint8				fRecvKey[32];
+
 			BString				fLocalIP;		// in-tunnel Address
 			BString				fRemoteIP;		// Endpoint host
 
