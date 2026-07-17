@@ -17,28 +17,25 @@
 class BMessageRunner;
 
 
-// WireGuard backend -- SKELETON.
+// WireGuard backend -- in-process data plane.
 //
-// Unlike OpenVPNBackend, this does not drive an external binary: Haiku has no
-// packaged `wg`/wireguard-go, so the plan is an in-process data plane. The
-// scaffolding here (config load, state machine, tun/UDP setup, timer hooks) is
-// in place; the WireGuard protocol itself is not yet implemented. The pieces
-// still to build, all marked with TODO(wireguard) below:
+// Unlike OpenVPNBackend, this drives no external binary (Haiku has no packaged
+// `wg`/wireguard-go): it speaks the protocol itself. Progress by step:
 //
-//   1. Key material: base64-decode the private/public/preshared keys.
-//   2. Data plane: open the tun/N slot we already manage for OpenVPN, bind a
-//      UDP socket to the [Peer] Endpoint.
-//   3. Handshake: the Noise IK handshake (Curve25519 + BLAKE2s + ChaCha20-
-//      Poly1305) -- libsodium (available on HaikuDepot) provides every
-//      primitive. Retransmit on a timer until the response lands.
-//   4. Transport: encrypt outbound tun reads / decrypt inbound UDP into the
-//      tun, on a reader thread; drive rekey (~120s) and PersistentKeepalive
-//      via BMessageRunner ticks, mirroring OpenVPNBackend's timers.
-//   5. Routing: install AllowedIPs as routes and tear them down on Disconnect,
-//      reusing the daemon's routing fix-up.
+//   1. DONE -- base64-decode the key material.
+//   2. DONE -- bring up a tun/N slot (via TunDevice), bind a UDP socket.
+//   3. DONE -- the Noise_IKpsk2 handshake (see WireGuardCrypto), validated
+//      against a reference responder.
+//   4. THIS STEP -- transport: a reader thread runs the handshake, then
+//      forwards tun<->UDP, encrypting/decrypting type-4 data messages and
+//      sending PersistentKeepalives, and posts CONNECTED.
+//   5. TODO(wireguard) -- install AllowedIPs as routes so traffic is actually
+//      steered into the tunnel; also key rotation (rekey ~120s) and a replay
+//      window. Without routing the tunnel is up but carries no user traffic.
 //
-// Until then Connect() loads and validates the config, then reports a clear
-// "not yet implemented" error rather than half-configuring the system.
+// State mutations stay on the daemon looper: the reader thread posts private
+// messages (connected / stats / exited) back via BMessenger(this), mirroring
+// OpenVPNBackend.
 class WireGuardBackend : public VPNBackend {
 public:
 								WireGuardBackend();
@@ -70,13 +67,27 @@ private:
 			bool				_BringUpTun();
 	// Bind a UDP socket toward the [Peer] Endpoint.
 			bool				_OpenUdpSocket();
+	// Open the /dev/tun/N node for reading/writing IP packets.
+			bool				_OpenTunFd();
 	// Run the Noise IK handshake. Returns true once transport keys are set.
 			bool				_PerformHandshake();
-	// Reader thread: tun<->UDP forwarding once the handshake completes.
+
+	// Wrap a plaintext IP packet (or 0 bytes for a keepalive) into a type-4
+	// transport message using fSendKey and the next send counter. `out` needs
+	// room for 16 + roundup16(plainLen) + 16 bytes; the total is returned.
+			size_t				_Encapsulate(const uint8* plain,
+									size_t plainLen, uint8* out);
+	// Decrypt a received type-4 message with fRecvKey into `out` (needs
+	// packetLen bytes). Returns the plaintext IP-packet length (0 for a
+	// keepalive) or -1 if the packet isn't a valid data message.
+			ssize_t				_Decapsulate(const uint8* packet,
+									size_t packetLen, uint8* out);
+
+	// Reader thread: handshake, then tun<->UDP forwarding until stopped.
 			void				_StartReader();
 			int32				_RunReaderLoop();
 	static	int32				_ReaderEntry(void* self);
-	// Tear everything down: threads, socket, tun slot, routes.
+	// Tear everything down: thread, sockets, tun slot.
 			void				_Cleanup();
 
 			VPNState			fState;
@@ -109,8 +120,11 @@ private:
 			BString				fTunNode;
 
 			int					fUdpSocket;		// -1 when none
+			int					fTunFd;			// /dev/tun/N, -1 when none
 			thread_id			fReader;		// -1 when no thread alive
-	// Handshake-retransmit / rekey / keepalive timer. NULL when idle.
+	// Monotonic per-packet counter for the transport nonce (send direction).
+			uint64				fSendCounter;
+	// Reserved for a future rekey/keepalive BMessageRunner. NULL when idle.
 			BMessageRunner*		fTimer;
 			bool				fStopRequested;
 };

@@ -4,20 +4,35 @@
  */
 #include "WireGuardBackend.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <Message.h>
 #include <MessageRunner.h>
+#include <Messenger.h>
 
 #include "TunDevice.h"
 #include "VPNProfile.h"
 #include "WireGuardCrypto.h"
+
+
+// Private 'what' codes the reader thread posts back to the looper, so all
+// state mutations happen on one thread (mirrors OpenVPNBackend).
+static const uint32 kMsgWgConnected		= 'wgCo';
+static const uint32 kMsgWgStats			= 'wgSt';
+static const uint32 kMsgWgReaderExited	= 'wgRx';
+
+// PersistentKeepalive fallback and the reader's poll cadence.
+static const bigtime_t kReaderPollInterval	= 250000;	// 0.25s select timeout
+static const int kHandshakeAttempts			= 3;
 
 
 // Decode standard base64 into `out` (capacity `outCap`), reporting the byte
@@ -75,7 +90,9 @@ WireGuardBackend::WireGuardBackend()
 	fTunInterface(),
 	fTunNode(),
 	fUdpSocket(-1),
+	fTunFd(-1),
 	fReader(-1),
+	fSendCounter(0),
 	fTimer(NULL),
 	fStopRequested(false)
 {
@@ -160,24 +177,22 @@ WireGuardBackend::Connect(const VPNProfile& profile)
 			"could not reach the WireGuard endpoint");
 		return B_ERROR;
 	}
-
-	// Step 3: the Noise IK handshake. On success we hold the transport keys.
-	if (!_PerformHandshake()) {
+	if (!_OpenTunFd()) {
 		_Cleanup();
-		_SetState(VPN_STATE_ERROR, "WireGuard handshake failed");
+		_SetState(VPN_STATE_ERROR, "could not open the tun device");
 		return B_ERROR;
 	}
-	printf("[WireGuard] handshake OK (session %u <-> %u)\n",
-		(unsigned)fSenderIndex, (unsigned)fReceiverIndex);
 
-	// TODO(wireguard) step 4: _StartReader() forwards tun<->UDP with fSendKey/
-	// fRecvKey and arms the rekey/keepalive timers, ending in CONNECTED and a
-	// B_OK return. Until then the handshake is proven but no traffic flows, so
-	// tear the plumbing down rather than claim a live tunnel.
-	_Cleanup();
-	_SetState(VPN_STATE_ERROR,
-		"WireGuard transport not yet implemented (handshake OK)");
-	return B_ERROR;
+	// Hand off to the reader thread: it runs the handshake and then the
+	// transport loop, posting CONNECTED / stats / exit back to the looper.
+	// Keeping the blocking work off the looper mirrors OpenVPNBackend.
+	_StartReader();
+	if (fReader < 0) {
+		_Cleanup();
+		_SetState(VPN_STATE_ERROR, "could not start the WireGuard worker");
+		return B_ERROR;
+	}
+	return B_OK;
 }
 
 
@@ -188,8 +203,13 @@ WireGuardBackend::Disconnect()
 		return B_OK;
 
 	fStopRequested = true;
-	_Cleanup();
-	_SetState(VPN_STATE_DISCONNECTED);
+	if (fReader < 0) {
+		// No worker running (e.g. a failed connect); tear down here.
+		_Cleanup();
+		_SetState(VPN_STATE_DISCONNECTED);
+	}
+	// Otherwise the reader notices fStopRequested within a poll interval,
+	// exits, and kMsgWgReaderExited settles the state on Disconnected.
 	return B_OK;
 }
 
@@ -233,8 +253,36 @@ void
 WireGuardBackend::MessageReceived(BMessage* message)
 {
 	switch (message->what) {
-		// TODO(wireguard): handshake-retransmit / rekey / keepalive timer
-		// ticks (posted by fTimer) and reader-thread events dispatch here.
+		case kMsgWgConnected:
+			_SetState(VPN_STATE_CONNECTED);
+			break;
+
+		case kMsgWgStats:
+		{
+			int64 in = 0;
+			int64 out = 0;
+			message->FindInt64("in", &in);
+			message->FindInt64("out", &out);
+			fStats.fBytesIn = (uint64)in;
+			fStats.fBytesOut = (uint64)out;
+			NotifyStats(fStats);
+			break;
+		}
+
+		case kMsgWgReaderExited:
+		{
+			// The reader has stopped (clean, error, or Disconnect). Join it and
+			// settle the state; detail is empty for a clean stop.
+			const char* detail = NULL;
+			message->FindString("detail", &detail);
+			_Cleanup();
+			if (detail != NULL && detail[0] != '\0')
+				_SetState(VPN_STATE_ERROR, detail);
+			else
+				_SetState(VPN_STATE_DISCONNECTED);
+			break;
+		}
+
 		default:
 			VPNBackend::MessageReceived(message);
 			break;
@@ -353,6 +401,24 @@ WireGuardBackend::_OpenUdpSocket()
 }
 
 
+bool
+WireGuardBackend::_OpenTunFd()
+{
+	// Open the character device the kernel tunnel add-on published when
+	// _BringUpTun ifconfig'd the slot up; IP packets are read/written raw.
+	// TODO(wireguard): confirm Haiku's tun framing (raw IP vs a leading
+	// address-family word) against a live capture -- this assumes raw IP,
+	// like openvpn's --dev-node path.
+	fTunFd = open(fTunNode.String(), O_RDWR);
+	if (fTunFd < 0) {
+		fprintf(stderr, "[WireGuard] cannot open %s\n", fTunNode.String());
+		return false;
+	}
+	fcntl(fTunFd, F_SETFD, FD_CLOEXEC);
+	return true;
+}
+
+
 static void
 store32_le(uint8* p, uint32 v)
 {
@@ -366,6 +432,46 @@ load32_le(const uint8* p)
 {
 	return (uint32)p[0] | ((uint32)p[1] << 8) | ((uint32)p[2] << 16)
 		| ((uint32)p[3] << 24);
+}
+
+
+static void
+store64_le(uint8* p, uint64 v)
+{
+	for (int i = 0; i < 8; i++)
+		p[i] = (uint8)(v >> (8 * i));
+}
+
+
+static uint64
+load64_le(const uint8* p)
+{
+	uint64 v = 0;
+	for (int i = 0; i < 8; i++)
+		v |= (uint64)p[i] << (8 * i);
+	return v;
+}
+
+
+// Length of the IP packet at `pkt` (up to `maxLen`), used to strip the zero
+// padding WireGuard adds before encryption. Falls back to maxLen for anything
+// that isn't a recognisable IPv4/IPv6 header.
+static size_t
+ip_packet_length(const uint8* pkt, size_t maxLen)
+{
+	if (maxLen == 0)
+		return 0;
+	int version = pkt[0] >> 4;
+	if (version == 4 && maxLen >= 20) {
+		size_t total = ((size_t)pkt[2] << 8) | pkt[3];
+		return total <= maxLen ? total : maxLen;
+	}
+	if (version == 6 && maxLen >= 40) {
+		size_t payload = ((size_t)pkt[4] << 8) | pkt[5];
+		size_t total = 40 + payload;
+		return total <= maxLen ? total : maxLen;
+	}
+	return maxLen;
 }
 
 
@@ -517,20 +623,60 @@ WireGuardBackend::_PerformHandshake()
 }
 
 
-void
-WireGuardBackend::_StartReader()
+size_t
+WireGuardBackend::_Encapsulate(const uint8* plain, size_t plainLen, uint8* out)
 {
-	// TODO(wireguard): spawn _ReaderEntry to forward tun<->UDP once transport
-	// keys are live, and post CONNECTED from there.
+	// Pad the plaintext up to a multiple of 16; a keepalive (plainLen 0) stays
+	// at 0 and encrypts to a bare 16-byte tag.
+	size_t padded = (plainLen + 15) & ~(size_t)15;
+
+	uint8 scratch[2048];
+	if (padded > sizeof(scratch))
+		return 0;
+	if (plainLen > 0)
+		memcpy(scratch, plain, plainLen);
+	memset(scratch + plainLen, 0, padded - plainLen);
+
+	out[0] = 4;
+	out[1] = out[2] = out[3] = 0;
+	store32_le(out + 4, fReceiverIndex);
+	store64_le(out + 8, fSendCounter);
+	if (!wg::AeadEncrypt(fSendKey, fSendCounter, scratch, padded, NULL, 0,
+			out + 16))
+		return 0;
+	fSendCounter++;
+	return 16 + padded + 16;
 }
 
 
-int32
-WireGuardBackend::_RunReaderLoop()
+ssize_t
+WireGuardBackend::_Decapsulate(const uint8* packet, size_t packetLen,
+	uint8* out)
 {
-	// TODO(wireguard): read tun -> encrypt -> UDP, and UDP -> decrypt -> tun,
-	// until fStopRequested; post state/stats back to the looper.
-	return 0;
+	if (packetLen < 32 || packet[0] != 4)
+		return -1;
+	uint64 counter = load64_le(packet + 8);
+	size_t cipherLen = packetLen - 16;		// ciphertext + 16-byte tag
+	// TODO(wireguard): enforce the sliding replay window on `counter`.
+	if (!wg::AeadDecrypt(fRecvKey, counter, packet + 16, cipherLen, NULL, 0,
+			out))
+		return -1;
+	size_t plainLen = cipherLen - 16;		// still padded
+	return (ssize_t)ip_packet_length(out, plainLen);
+}
+
+
+void
+WireGuardBackend::_StartReader()
+{
+	fReader = spawn_thread(_ReaderEntry, "wireguard-reader",
+		B_NORMAL_PRIORITY, this);
+	if (fReader < B_OK) {
+		fReader = -1;
+		fprintf(stderr, "[WireGuard] spawn_thread failed\n");
+		return;
+	}
+	resume_thread(fReader);
 }
 
 
@@ -541,13 +687,130 @@ WireGuardBackend::_ReaderEntry(void* self)
 }
 
 
+int32
+WireGuardBackend::_RunReaderLoop()
+{
+	BMessenger self(this);
+
+	// Handshake, retransmitting a few times if the response doesn't land.
+	bool handshook = false;
+	for (int i = 0; i < kHandshakeAttempts && !fStopRequested; i++) {
+		if (_PerformHandshake()) {
+			handshook = true;
+			break;
+		}
+	}
+	if (!handshook) {
+		BMessage exited(kMsgWgReaderExited);
+		exited.AddString("detail", fStopRequested ? "" : "handshake failed");
+		self.SendMessage(&exited);
+		return 0;
+	}
+
+	fSendCounter = 0;
+	printf("[WireGuard] handshake OK (session %u <-> %u)\n",
+		(unsigned)fSenderIndex, (unsigned)fReceiverIndex);
+	self.SendMessage(kMsgWgConnected);
+
+	// Non-blocking for the select() loop; the handshake used blocking recv.
+	fcntl(fUdpSocket, F_SETFL, fcntl(fUdpSocket, F_GETFL, 0) | O_NONBLOCK);
+	fcntl(fTunFd, F_SETFL, fcntl(fTunFd, F_GETFL, 0) | O_NONBLOCK);
+
+	bigtime_t keepalive = fConfig.peer.persistentKeepalive > 0
+		? (bigtime_t)fConfig.peer.persistentKeepalive * 1000000LL : 0;
+	bigtime_t lastSend = system_time();
+	bigtime_t lastStats = lastSend;
+	uint64 bytesIn = 0;
+	uint64 bytesOut = 0;
+
+	uint8 plain[2048];
+	uint8 wire[2048];
+
+	while (!fStopRequested) {
+		fd_set rfds;
+		FD_ZERO(&rfds);
+		FD_SET(fTunFd, &rfds);
+		FD_SET(fUdpSocket, &rfds);
+		int maxfd = (fTunFd > fUdpSocket ? fTunFd : fUdpSocket) + 1;
+		struct timeval tv;
+		tv.tv_sec = 0;
+		tv.tv_usec = kReaderPollInterval;
+		int r = select(maxfd, &rfds, NULL, NULL, &tv);
+		if (r < 0) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+
+		// Outbound: tun -> encrypt -> UDP. Cap the read so the encapsulated
+		// packet fits `wire` comfortably.
+		if (r > 0 && FD_ISSET(fTunFd, &rfds)) {
+			ssize_t n = read(fTunFd, plain, 1500);
+			if (n > 0) {
+				size_t len = _Encapsulate(plain, (size_t)n, wire);
+				if (len > 0 && send(fUdpSocket, wire, len, 0) == (ssize_t)len) {
+					bytesOut += (uint64)n;
+					lastSend = system_time();
+				}
+			}
+		}
+
+		// Inbound: UDP -> decrypt -> tun. plen == 0 is a keepalive (nothing to
+		// write); plen < 0 is a non-data or failed packet (dropped).
+		if (r > 0 && FD_ISSET(fUdpSocket, &rfds)) {
+			ssize_t n = recv(fUdpSocket, wire, sizeof(wire), 0);
+			if (n > 0) {
+				ssize_t plen = _Decapsulate(wire, (size_t)n, plain);
+				if (plen > 0) {
+					write(fTunFd, plain, (size_t)plen);
+					bytesIn += (uint64)plen;
+				}
+			}
+		}
+
+		bigtime_t now = system_time();
+		if (keepalive > 0 && now - lastSend >= keepalive) {
+			size_t len = _Encapsulate(NULL, 0, wire);
+			if (len > 0)
+				send(fUdpSocket, wire, len, 0);
+			lastSend = now;
+		}
+		if (now - lastStats >= 1000000LL) {
+			BMessage stats(kMsgWgStats);
+			stats.AddInt64("in", (int64)bytesIn);
+			stats.AddInt64("out", (int64)bytesOut);
+			self.SendMessage(&stats);
+			lastStats = now;
+		}
+	}
+
+	BMessage exited(kMsgWgReaderExited);
+	exited.AddString("detail", "");		// clean stop
+	self.SendMessage(&exited);
+	return 0;
+}
+
+
 void
 WireGuardBackend::_Cleanup()
 {
-	// TODO(wireguard): join the reader thread and remove installed routes.
+	// Stop the reader and join it before pulling the fds/interface out from
+	// under it. Safe to call twice (fReader/fds are cleared as we go).
+	fStopRequested = true;
+	if (fReader > 0) {
+		status_t exitCode = 0;
+		wait_for_thread(fReader, &exitCode);
+		fReader = -1;
+	}
+
+	// TODO(wireguard) step 5: remove any routes installed for AllowedIPs.
 	delete fTimer;
 	fTimer = NULL;
 
+	if (fTunFd >= 0) {
+		close(fTunFd);
+		fTunFd = -1;
+	}
 	if (fUdpSocket >= 0) {
 		close(fUdpSocket);
 		fUdpSocket = -1;
