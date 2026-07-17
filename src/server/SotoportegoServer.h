@@ -16,6 +16,7 @@
 #include "VPNState.h"
 
 class VPNBackend;
+class BMessageRunner;
 
 
 // The Sotoportego daemon.
@@ -78,6 +79,21 @@ private:
 	// once the answer comes back.
 			void				_HandleStatusForNotification(
 									BMessage* message);
+
+	// Auto-reconnect with exponential backoff. _ArmReconnect snapshots the
+	// profile/credentials on every user connect; when a session then drops
+	// without a user Disconnect, _StartReconnectCountdown arms a 1 Hz timer
+	// whose ticks (_HandleReconnectTick) count down and finally fire
+	// _AttemptReconnect. _CancelReconnect tears the timer down.
+			void				_ArmReconnect(const BMessage* connectMessage,
+									const char* user, const char* pass);
+			bool				_StartReconnectCountdown();
+			void				_HandleReconnectTick();
+			void				_AttemptReconnect();
+			void				_CancelReconnect();
+			void				_BroadcastReconnecting();
+			BString				_ReconnectDetail() const;
+
 			void				_HandleCountryResult(BMessage* message);
 			void				_HandleHomeGeoResult(BMessage* message);
 			void				_KickHomeGeoLookup();
@@ -142,6 +158,21 @@ private:
 	// Clients that asked for the catalogue while a fetch was running. They
 	// all get the same reply once it lands.
 			std::vector<BMessenger>	fCataloguePending;
+
+	// --- Auto-reconnect with backoff ------------------------------------
+	// When a session drops unexpectedly (the openvpn process exits without
+	// the user asking to disconnect), we retry the same profile on an
+	// exponential backoff, surfacing a live countdown as VPN_STATE_RECONNECTING
+	// so clients show "Reconnecting - retry in Ns". A user Disconnect, or
+	// exhausting the attempt budget, cancels it.
+			BMessage				fReconnectProfile;	// archived profile to retry
+			BString					fReconnectUser;
+			BString					fReconnectPass;
+			bool					fUserInitiatedDisconnect;
+			bool					fReconnectArmed;	// a connect happened
+			int32					fReconnectAttempt;	// 0 = none in progress
+			int32					fReconnectSecondsLeft;
+			BMessageRunner*			fReconnectTimer;	// 1 Hz tick, NULL when idle
 };
 
 

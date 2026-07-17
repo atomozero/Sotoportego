@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include <Message.h>
+#include <MessageRunner.h>
 #include <Notification.h>
 
 #include <fcntl.h>
@@ -39,6 +40,24 @@ static const uint32 kMsgHomeGeoResult	= 'sHom';
 // the fetch has failed). Carries the same payload as kMsgVPNGateList; we
 // rewrap it before broadcasting.
 static const uint32 kMsgVPNGateFetched = 'sVGr';
+
+// Internal 'what' fired once a second by the auto-reconnect countdown timer.
+static const uint32 kMsgReconnectTick = 'sRcT';
+
+// Auto-reconnect budget and backoff. After this many consecutive failed
+// attempts we stop and leave the session Disconnected.
+static const int32 kReconnectMaxAttempts = 5;
+
+// Seconds to wait before the given 1-based attempt: 5s, doubling, capped at
+// 60s (5, 10, 20, 40, 60).
+static int32
+reconnect_delay_seconds(int32 attempt)
+{
+	int32 d = 5;
+	for (int32 i = 1; i < attempt && d < 60; i++)
+		d *= 2;
+	return d > 60 ? 60 : d;
+}
 
 // How long a successful catalogue stays warm before we ask vpngate again.
 // Public-server churn is on the order of hours; an interactive user is more
@@ -73,7 +92,15 @@ SotoportegoServer::SotoportegoServer()
 	fCatalogueCache(),
 	fCatalogueFetchedAt(0),
 	fCatalogueFetchInFlight(false),
-	fCataloguePending()
+	fCataloguePending(),
+	fReconnectProfile(),
+	fReconnectUser(),
+	fReconnectPass(),
+	fUserInitiatedDisconnect(false),
+	fReconnectArmed(false),
+	fReconnectAttempt(0),
+	fReconnectSecondsLeft(0),
+	fReconnectTimer(NULL)
 {
 	fProfiles.Load();
 }
@@ -81,6 +108,7 @@ SotoportegoServer::SotoportegoServer()
 
 SotoportegoServer::~SotoportegoServer()
 {
+	delete fReconnectTimer;
 	// Once AddHandler() succeeds, the looper owns fBackend and deletes it as
 	// part of its own teardown, so we must not delete it here.
 }
@@ -149,6 +177,11 @@ SotoportegoServer::MessageReceived(BMessage* message)
 		// --- Internal: VPNGate catalogue arrived from the fetcher --------
 		case kMsgVPNGateFetched:
 			_HandleVPNGateFetched(message);
+			break;
+
+		// --- Internal: auto-reconnect countdown tick ---------------------
+		case kMsgReconnectTick:
+			_HandleReconnectTick();
 			break;
 
 		// --- Events from the backend (we are its observer) -------------
@@ -245,6 +278,10 @@ SotoportegoServer::_HandleConnect(BMessage* message)
 	// A connect implies the sender wants updates.
 	_HandleSubscribe(message);
 
+	// Remember this connect so an unexpected drop can be retried, and reset
+	// the backoff: a fresh user-initiated connect always starts from zero.
+	_ArmReconnect(message, username, password);
+
 	status_t result = fBackend->Connect(profile);
 	if (result != B_OK) {
 		printf("[server] connect rejected: %s\n", strerror(result));
@@ -267,8 +304,25 @@ SotoportegoServer::_HandleConnect(BMessage* message)
 void
 SotoportegoServer::_HandleDisconnect(BMessage* /*message*/)
 {
+	// Mark this as intentional so the drop that follows isn't auto-retried,
+	// and stop any countdown already ticking.
+	fUserInitiatedDisconnect = true;
+	bool wasReconnecting = (fReconnectTimer != NULL);
+	_CancelReconnect();
+
 	if (fBackend != NULL)
 		fBackend->Disconnect();
+
+	// If we were mid-countdown the backend is already Disconnected and won't
+	// emit a fresh event, so tell clients ourselves that we've stopped.
+	if (wasReconnecting) {
+		BMessage upd(kMsgStatusUpdate);
+		upd.AddInt32(kFieldState, VPN_STATE_DISCONNECTED);
+		_EnrichForBroadcast(&upd);
+		_Broadcast(&upd);
+		fLastState = VPN_STATE_DISCONNECTED;
+		fConnectedHost = "";
+	}
 }
 
 
@@ -663,6 +717,20 @@ SotoportegoServer::_HandleStatusForNotification(BMessage* message)
 	int32 stateValue = VPN_STATE_DISCONNECTED;
 	message->FindInt32(kFieldState, &stateValue);
 	VPNState newState = (VPNState)stateValue;
+
+	// Auto-reconnect: an unexpected drop (openvpn exited, but the user didn't
+	// ask to disconnect) turns this plain DISCONNECTED into a RECONNECTING
+	// countdown. Rewrite the very message we're about to broadcast so clients
+	// never flash "Disconnected" first.
+	if (newState == VPN_STATE_DISCONNECTED && _StartReconnectCountdown()) {
+		newState = VPN_STATE_RECONNECTING;
+		BString detail = _ReconnectDetail();
+		if (message->ReplaceInt32(kFieldState, newState) != B_OK)
+			message->AddInt32(kFieldState, newState);
+		if (message->ReplaceString(kFieldDetail, detail.String()) != B_OK)
+			message->AddString(kFieldDetail, detail.String());
+	}
+
 	VPNState previous = fLastState;
 	fLastState = newState;
 
@@ -684,6 +752,10 @@ SotoportegoServer::_HandleStatusForNotification(BMessage* message)
 	switch (newState) {
 		case VPN_STATE_CONNECTED:
 		{
+			// A live tunnel resets the backoff budget so a later drop gets
+			// the full retry allowance again.
+			fReconnectAttempt = 0;
+
 			// Build a one-line server summary up-front -- the geo-lookup
 			// result needs the same line plus the country tag.
 			const char* remote = NULL;
@@ -749,6 +821,122 @@ SotoportegoServer::_HandleStatusForNotification(BMessage* message)
 			// already shows them and we don't want to flood the user.
 			break;
 	}
+}
+
+
+void
+SotoportegoServer::_ArmReconnect(const BMessage* connectMessage,
+	const char* user, const char* pass)
+{
+	// Snapshot everything a retry needs. Called on every user/map-initiated
+	// connect, so a fresh manual connect also resets the backoff.
+	_CancelReconnect();
+	fReconnectProfile.MakeEmpty();
+	connectMessage->FindMessage(kFieldProfile, &fReconnectProfile);
+	fReconnectUser = (user != NULL) ? user : "";
+	fReconnectPass = (pass != NULL) ? pass : "";
+	fUserInitiatedDisconnect = false;
+	fReconnectArmed = true;
+	fReconnectAttempt = 0;
+}
+
+
+BString
+SotoportegoServer::_ReconnectDetail() const
+{
+	BString detail;
+	detail << "retry in " << fReconnectSecondsLeft << "s (attempt "
+		<< fReconnectAttempt << "/" << kReconnectMaxAttempts << ")";
+	return detail;
+}
+
+
+bool
+SotoportegoServer::_StartReconnectCountdown()
+{
+	if (fUserInitiatedDisconnect || !fReconnectArmed
+			|| fReconnectAttempt >= kReconnectMaxAttempts)
+		return false;
+
+	_CancelReconnect();		// drop any stale timer first
+	fReconnectAttempt++;
+	fReconnectSecondsLeft = reconnect_delay_seconds(fReconnectAttempt);
+
+	BMessage tick(kMsgReconnectTick);
+	fReconnectTimer = new BMessageRunner(BMessenger(this), &tick, 1000000LL);
+	if (fReconnectTimer == NULL || fReconnectTimer->InitCheck() != B_OK) {
+		_CancelReconnect();
+		return false;
+	}
+	return true;
+}
+
+
+void
+SotoportegoServer::_HandleReconnectTick()
+{
+	// A user Disconnect between ticks cancels the timer; guard anyway.
+	if (fReconnectTimer == NULL || fUserInitiatedDisconnect)
+		return;
+
+	if (fReconnectSecondsLeft > 1) {
+		fReconnectSecondsLeft--;
+		_BroadcastReconnecting();
+		return;
+	}
+
+	// Countdown hit zero: stop ticking and fire the attempt.
+	_CancelReconnect();
+	_AttemptReconnect();
+}
+
+
+void
+SotoportegoServer::_AttemptReconnect()
+{
+	if (fBackend == NULL)
+		return;
+
+	VPNProfile profile;
+	profile.Unarchive(fReconnectProfile);
+
+	if (fReconnectUser.Length() > 0 || fReconnectPass.Length() > 0)
+		fBackend->SetCredentials(fReconnectUser, fReconnectPass);
+
+	printf("[server] reconnect attempt %d/%d -> %s\n",
+		(int)fReconnectAttempt, (int)kReconnectMaxAttempts,
+		profile.fServer.String());
+
+	// On success the backend drives CONNECTING -> ... and broadcasts state;
+	// fReconnectAttempt is reset when CONNECTED lands.
+	status_t result = fBackend->Connect(profile);
+	if (result != B_OK) {
+		// Couldn't even start openvpn. Fall back to another backoff cycle if
+		// the budget allows; otherwise let the backend's ERROR stand.
+		printf("[server] reconnect Connect() failed: %s\n", strerror(result));
+		if (_StartReconnectCountdown())
+			_BroadcastReconnecting();
+	}
+}
+
+
+void
+SotoportegoServer::_CancelReconnect()
+{
+	delete fReconnectTimer;
+	fReconnectTimer = NULL;
+	fReconnectSecondsLeft = 0;
+}
+
+
+void
+SotoportegoServer::_BroadcastReconnecting()
+{
+	BMessage upd(kMsgStatusUpdate);
+	upd.AddInt32(kFieldState, VPN_STATE_RECONNECTING);
+	upd.AddString(kFieldDetail, _ReconnectDetail().String());
+	_EnrichForBroadcast(&upd);
+	_Broadcast(&upd);
 }
 
 
