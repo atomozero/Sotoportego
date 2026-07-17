@@ -51,6 +51,11 @@ private:
 	// the user moves or deletes the file they imported from. No-op for
 	// non-OpenVPN profiles, an empty path, or a path already in the store.
 			void				_StageImportedConfig(VPNProfile& profile);
+
+	// Delete a profile's staged .ovpn copy on removal, but only if it lives
+	// in our config store and no remaining profile still points at it. Call
+	// after the profile has been removed from the store.
+			void				_RemoveStagedConfig(const BString& configPath);
 			void				_HandleRequestVPNGate(BMessage* message);
 			void				_HandleConnectVPNGate(BMessage* message);
 

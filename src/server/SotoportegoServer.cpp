@@ -46,8 +46,9 @@ static const uint32 kMsgVPNGateFetched = 'sVGr';
 static const bigtime_t kCatalogueTTL	= 10 * 60 * 1000000LL;	// 10 minutes
 
 // Defined below (near _WriteVPNGateConfig); forward-declared so the earlier
-// _StageImportedConfig can use it too.
+// _StageImportedConfig / _RemoveStagedConfig can use them too.
 static BString sanitize_filename(const char* name, const char* fallback);
+static bool imported_config_dir(BPath& out);
 
 // Identifier the notification server uses to update the same toast rather
 // than stacking new ones for every transition.
@@ -498,10 +499,8 @@ SotoportegoServer::_StageImportedConfig(VPNProfile& profile)
 		return;
 
 	BPath dir;
-	if (find_directory(B_USER_SETTINGS_DIRECTORY, &dir) != B_OK)
+	if (!imported_config_dir(dir))
 		return;
-	dir.Append("Sotoportego");
-	dir.Append("configs");
 
 	// Already in our store? Don't re-copy (e.g. a re-save of an
 	// already-imported profile, or the very file we staged last time). The
@@ -557,6 +556,36 @@ SotoportegoServer::_StageImportedConfig(VPNProfile& profile)
 
 
 void
+SotoportegoServer::_RemoveStagedConfig(const BString& configPath)
+{
+	if (configPath.Length() == 0)
+		return;
+
+	BPath dir;
+	if (!imported_config_dir(dir))
+		return;
+	BString storeDir(dir.Path());
+	storeDir << "/";
+
+	// Only ever delete files we staged ourselves (inside our config store).
+	if (!configPath.StartsWith(storeDir))
+		return;
+
+	// Don't remove a copy another profile still points at. Two profile names
+	// can sanitise to the same filename, so they'd share one staged file;
+	// only delete it once nothing references it. Call this AFTER the profile
+	// has left the store so it isn't counted here.
+	for (size_t i = 0; i < fProfiles.Count(); i++) {
+		if (fProfiles.At(i).fConfigPath == configPath)
+			return;
+	}
+
+	if (BEntry(configPath.String()).Remove() == B_OK)
+		printf("[server] removed staged config %s\n", configPath.String());
+}
+
+
+void
 SotoportegoServer::_HandleDeleteProfile(BMessage* message)
 {
 	const char* name = NULL;
@@ -565,12 +594,24 @@ SotoportegoServer::_HandleDeleteProfile(BMessage* message)
 		return;
 	}
 
+	// Capture the config path before the profile leaves the store so we can
+	// clean up a staged copy afterwards.
+	BString configPath;
+	for (size_t i = 0; i < fProfiles.Count(); i++) {
+		if (fProfiles.At(i).fName == name) {
+			configPath = fProfiles.At(i).fConfigPath;
+			break;
+		}
+	}
+
 	status_t result = fProfiles.Delete(name);
 	if (result != B_OK) {
 		printf("[server] delete-profile '%s' failed: %s\n",
 			name, strerror(result));
 		return;
 	}
+
+	_RemoveStagedConfig(configPath);
 
 	printf("[server] deleted profile '%s' (%zu total)\n",
 		name, fProfiles.Count());
@@ -911,6 +952,20 @@ sanitize_filename(const char* name, const char* fallback)
 	if (safe.Length() == 0)
 		safe = fallback;
 	return safe;
+}
+
+
+// Fills `out` with the daemon's imported-config store dir
+// ($B_USER_SETTINGS_DIRECTORY/Sotoportego/configs). Returns false if the
+// settings directory can't be resolved.
+static bool
+imported_config_dir(BPath& out)
+{
+	if (find_directory(B_USER_SETTINGS_DIRECTORY, &out) != B_OK)
+		return false;
+	out.Append("Sotoportego");
+	out.Append("configs");
+	return true;
 }
 
 
