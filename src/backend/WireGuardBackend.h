@@ -29,9 +29,9 @@ class BMessageRunner;
 //   4. THIS STEP -- transport: a reader thread runs the handshake, then
 //      forwards tun<->UDP, encrypting/decrypting type-4 data messages and
 //      sending PersistentKeepalives, and posts CONNECTED.
-//   5. TODO(wireguard) -- install AllowedIPs as routes so traffic is actually
-//      steered into the tunnel; also key rotation (rekey ~120s) and a replay
-//      window. Without routing the tunnel is up but carries no user traffic.
+//   5. THIS STEP -- install AllowedIPs as routes (via TunDevice), pinning the
+//      endpoint to the carrier for a full tunnel so our UDP doesn't loop.
+//      Still TODO after this: key rotation (rekey ~120s) and a replay window.
 //
 // State mutations stay on the daemon looper: the reader thread posts private
 // messages (connected / stats / exited) back via BMessenger(this), mirroring
@@ -83,6 +83,11 @@ private:
 			ssize_t				_Decapsulate(const uint8* packet,
 									size_t packetLen, uint8* out);
 
+	// Install / remove the AllowedIPs routes (and, for a full tunnel, the
+	// endpoint pin + default-route swap), all via TunDevice::RunRoute.
+			void				_InstallRoutes();
+			void				_RemoveRoutes();
+
 	// Reader thread: handshake, then tun<->UDP forwarding until stopped.
 			void				_StartReader();
 			int32				_RunReaderLoop();
@@ -118,6 +123,15 @@ private:
 	// probing rationale). "tun/N" for ifconfig/route, "/dev/tun/N" for the node.
 			BString				fTunInterface;
 			BString				fTunNode;
+	// Resolved endpoint IP (pinned to the carrier) and the address we put on
+	// the tun (used as the on-link next hop for AllowedIPs routes).
+			BString				fEndpointIP;
+			BString				fTunSelfIP;
+	// Routing teardown state.
+			bool				fRoutesInstalled;
+			bool				fReplacedDefault;
+			BString				fOrigGateway;
+			BString				fOrigGatewayIface;
 
 			int					fUdpSocket;		// -1 when none
 			int					fTunFd;			// /dev/tun/N, -1 when none

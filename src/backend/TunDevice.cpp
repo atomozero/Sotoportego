@@ -86,3 +86,90 @@ TunDevice::ProbeFreeSlot(BString& outInterface, BString& outNode)
 
 	return false;
 }
+
+
+bool
+TunDevice::RunRoute(const char* const argv[])
+{
+	// Printable form for the log so the user can correlate with a hand-run
+	// command.
+	BString line("[route]");
+	for (int i = 1; argv[i] != NULL; i++) {
+		line << " ";
+		line << argv[i];
+	}
+
+	pid_t pid = -1;
+	int rc = posix_spawnp(&pid, "route", NULL, NULL,
+		(char* const*)argv, environ);
+	if (rc != 0) {
+		fprintf(stderr, "%s [spawn failed: %s]\n", line.String(), strerror(rc));
+		return false;
+	}
+	int status = 0;
+	if (waitpid(pid, &status, 0) != pid) {
+		fprintf(stderr, "%s [waitpid failed]\n", line.String());
+		return false;
+	}
+	bool ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+	if (ok)
+		printf("%s\n", line.String());
+	else {
+		fprintf(stderr, "%s [exit %d]\n", line.String(),
+			WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+	}
+	return ok;
+}
+
+
+static bool
+looks_like_ipv4(const BString& s)
+{
+	int dots = 0;
+	for (int32 i = 0; i < s.Length(); i++) {
+		char c = s.ByteAt(i);
+		if (c == '.')
+			dots++;
+		else if (c < '0' || c > '9')
+			return false;
+	}
+	return dots == 3;
+}
+
+
+bool
+TunDevice::DefaultGateway(BString& gateway, BString& iface)
+{
+	// Parse `route`'s table. Haiku prints the default route as destination
+	// 0.0.0.0 with netmask 0.0.0.0 and the interface as the last column; the
+	// next-hop is the first dotted-quad after the netmask that isn't 0.0.0.0.
+	FILE* fp = popen("route", "r");
+	if (fp == NULL)
+		return false;
+
+	bool found = false;
+	char line[512];
+	while (!found && fgets(line, sizeof(line), fp) != NULL) {
+		BString tokens[16];
+		int count = 0;
+		char* save = NULL;
+		for (char* tok = strtok_r(line, " \t\r\n", &save);
+				tok != NULL && count < 16;
+				tok = strtok_r(NULL, " \t\r\n", &save)) {
+			tokens[count++] = tok;
+		}
+		if (count < 3 || tokens[0] != "0.0.0.0" || tokens[1] != "0.0.0.0")
+			continue;
+
+		for (int i = 2; i < count - 1; i++) {
+			if (looks_like_ipv4(tokens[i]) && tokens[i] != "0.0.0.0") {
+				gateway = tokens[i];
+				iface = tokens[count - 1];
+				found = true;
+				break;
+			}
+		}
+	}
+	pclose(fp);
+	return found;
+}

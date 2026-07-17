@@ -4,16 +4,20 @@
  */
 #include "WireGuardBackend.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+
+#include <vector>
 
 #include <Message.h>
 #include <MessageRunner.h>
@@ -89,6 +93,12 @@ WireGuardBackend::WireGuardBackend()
 	fRemoteIP(),
 	fTunInterface(),
 	fTunNode(),
+	fEndpointIP(),
+	fTunSelfIP(),
+	fRoutesInstalled(false),
+	fReplacedDefault(false),
+	fOrigGateway(),
+	fOrigGatewayIface(),
 	fUdpSocket(-1),
 	fTunFd(-1),
 	fReader(-1),
@@ -254,6 +264,8 @@ WireGuardBackend::MessageReceived(BMessage* message)
 {
 	switch (message->what) {
 		case kMsgWgConnected:
+			// Steer traffic into the tunnel now that transport keys are live.
+			_InstallRoutes();
 			_SetState(VPN_STATE_CONNECTED);
 			break;
 
@@ -351,6 +363,7 @@ WireGuardBackend::_BringUpTun()
 	if (slash >= 0)
 		ip.Truncate(slash);
 	ip.Trim();
+	fTunSelfIP = ip;		// used as the on-link next hop for AllowedIPs routes
 	if (ip.Length() == 0)
 		return true;		// no address to assign; the slot is up
 
@@ -388,6 +401,7 @@ WireGuardBackend::_OpenUdpSocket()
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(fConfig.peer.endpointPort);
 	memcpy(&addr.sin_addr, he->h_addr_list[0], he->h_length);
+	fEndpointIP = inet_ntoa(addr.sin_addr);		// pinned to the carrier later
 
 	// connect() the datagram socket so send()/recv() default to the endpoint
 	// and the kernel drops packets from anywhere else.
@@ -666,6 +680,160 @@ WireGuardBackend::_Decapsulate(const uint8* packet, size_t packetLen,
 }
 
 
+// One AllowedIPs entry, resolved to the network + dotted netmask the Haiku
+// `route` command wants.
+struct Cidr {
+	BString	net;
+	BString	mask;
+	bool	isDefault;		// 0.0.0.0/0 -- the full-tunnel catch-all
+};
+
+
+// Parse "10.0.0.0/24, 0.0.0.0/0" into Cidr entries. IPv4 only for now; IPv6
+// entries (containing ':') are skipped -- TODO(wireguard).
+static std::vector<Cidr>
+parse_allowed_ips(const BString& allowed)
+{
+	std::vector<Cidr> out;
+	int32 start = 0;
+	while (start <= allowed.Length()) {
+		int32 comma = allowed.FindFirst(',', start);
+		int32 end = (comma < 0) ? allowed.Length() : comma;
+		BString token;
+		allowed.CopyInto(token, start, end - start);
+		token.Trim();
+		start = end + 1;
+		if (token.Length() == 0 || token.FindFirst(':') >= 0)
+			continue;
+
+		BString net = token;
+		int prefix = 32;
+		int32 slash = token.FindFirst('/');
+		if (slash >= 0) {
+			net.Truncate(slash);
+			BString p;
+			token.CopyInto(p, slash + 1, token.Length() - slash - 1);
+			prefix = atoi(p.String());
+		}
+		net.Trim();
+		if (net.Length() == 0 || prefix < 0 || prefix > 32)
+			continue;
+
+		uint32 m = (prefix == 0) ? 0 : (0xFFFFFFFFu << (32 - prefix));
+		Cidr c;
+		c.net = net;
+		c.mask.SetToFormat("%u.%u.%u.%u", (m >> 24) & 0xFF, (m >> 16) & 0xFF,
+			(m >> 8) & 0xFF, m & 0xFF);
+		c.isDefault = (net == "0.0.0.0" && prefix == 0);
+		out.push_back(c);
+	}
+	return out;
+}
+
+
+void
+WireGuardBackend::_InstallRoutes()
+{
+	if (fRoutesInstalled)
+		return;
+
+	std::vector<Cidr> cidrs = parse_allowed_ips(fConfig.peer.allowedIPs);
+	if (cidrs.empty()) {
+		printf("[WireGuard] no AllowedIPs to route\n");
+		return;
+	}
+
+	bool anyDefault = false;
+	for (size_t i = 0; i < cidrs.size(); i++)
+		anyDefault = anyDefault || cidrs[i].isDefault;
+
+	// The endpoint pin and the full-tunnel default swap both need the carrier's
+	// current gateway. Discovering it can fail (route-table parsing); a full
+	// tunnel without it would loop our own UDP, so bail rather than break the
+	// user's internet.
+	fOrigGateway = "";
+	fOrigGatewayIface = "";
+	fReplacedDefault = false;
+	if (!TunDevice::DefaultGateway(fOrigGateway, fOrigGatewayIface)
+			&& anyDefault) {
+		fprintf(stderr, "[WireGuard] no default gateway found; refusing to "
+			"install a full-tunnel route (it would loop)\n");
+		return;
+	}
+
+	// 1) Pin the endpoint to the carrier so our encrypted UDP doesn't try to
+	// flow back through the tunnel it carries.
+	if (fEndpointIP.Length() > 0 && fOrigGateway.Length() > 0) {
+		const char* const pin[] = {
+			"route", "add", fOrigGatewayIface.String(), "inet",
+			fEndpointIP.String(), "gw", fOrigGateway.String(),
+			"netmask", "255.255.255.255", NULL
+		};
+		TunDevice::RunRoute(pin);
+	}
+
+	// 2) For a full tunnel, drop the carrier default before adding ours.
+	if (anyDefault && fOrigGateway.Length() > 0) {
+		const char* const drop[] = {
+			"route", "delete", fOrigGatewayIface.String(), "inet", "0.0.0.0",
+			"gw", fOrigGateway.String(), "netmask", "0.0.0.0", NULL
+		};
+		TunDevice::RunRoute(drop);
+		fReplacedDefault = true;
+	}
+
+	// 3) Route each AllowedIPs range into the tun, using the interface's own
+	// address as the on-link next hop (the tun is point-to-point self).
+	for (size_t i = 0; i < cidrs.size(); i++) {
+		const char* const add[] = {
+			"route", "add", fTunInterface.String(), "inet",
+			cidrs[i].net.String(), "gw", fTunSelfIP.String(),
+			"netmask", cidrs[i].mask.String(), NULL
+		};
+		TunDevice::RunRoute(add);
+	}
+
+	fRoutesInstalled = true;
+}
+
+
+void
+WireGuardBackend::_RemoveRoutes()
+{
+	if (!fRoutesInstalled)
+		return;
+
+	std::vector<Cidr> cidrs = parse_allowed_ips(fConfig.peer.allowedIPs);
+	for (size_t i = 0; i < cidrs.size(); i++) {
+		const char* const del[] = {
+			"route", "delete", fTunInterface.String(), "inet",
+			cidrs[i].net.String(), "gw", fTunSelfIP.String(),
+			"netmask", cidrs[i].mask.String(), NULL
+		};
+		TunDevice::RunRoute(del);
+	}
+
+	if (fReplacedDefault && fOrigGateway.Length() > 0) {
+		const char* const restore[] = {
+			"route", "add", fOrigGatewayIface.String(), "inet", "0.0.0.0",
+			"gw", fOrigGateway.String(), "netmask", "0.0.0.0", NULL
+		};
+		TunDevice::RunRoute(restore);
+	}
+	if (fEndpointIP.Length() > 0 && fOrigGateway.Length() > 0) {
+		const char* const unpin[] = {
+			"route", "delete", fOrigGatewayIface.String(), "inet",
+			fEndpointIP.String(), "gw", fOrigGateway.String(),
+			"netmask", "255.255.255.255", NULL
+		};
+		TunDevice::RunRoute(unpin);
+	}
+
+	fRoutesInstalled = false;
+	fReplacedDefault = false;
+}
+
+
 void
 WireGuardBackend::_StartReader()
 {
@@ -803,7 +971,10 @@ WireGuardBackend::_Cleanup()
 		fReader = -1;
 	}
 
-	// TODO(wireguard) step 5: remove any routes installed for AllowedIPs.
+	// Drop our routes before the interface goes away, so the carrier default
+	// is restored while its gateway is still reachable.
+	_RemoveRoutes();
+
 	delete fTimer;
 	fTimer = NULL;
 

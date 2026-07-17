@@ -95,46 +95,6 @@ escape_arg(const BString& value)
 }
 
 
-// Same shape as TunDevice::RunIfconfig but for /bin/route. Used to install and
-// uninstall the routes we need to make redirect-gateway actually work on
-// Haiku. Returns false (and complains to stderr) if route exited non-zero,
-// because silent failures here are exactly what lets the system end up
-// stuck without a working default route.
-static bool
-run_route(const char* const argv[])
-{
-	// Build a printable command for the daemon log so the user can correlate
-	// it with what they'd run by hand.
-	BString line("[OpenVPN] route");
-	for (int i = 1; argv[i] != NULL; i++) {
-		line << " ";
-		line << argv[i];
-	}
-
-	pid_t pid = -1;
-	int rc = posix_spawnp(&pid, "route", NULL, NULL,
-		(char* const*)argv, environ);
-	if (rc != 0) {
-		fprintf(stderr, "%s [spawn failed: %s]\n",
-			line.String(), strerror(rc));
-		return false;
-	}
-	int status = 0;
-	if (waitpid(pid, &status, 0) != pid) {
-		fprintf(stderr, "%s [waitpid failed]\n", line.String());
-		return false;
-	}
-	bool ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
-	if (ok) {
-		printf("%s\n", line.String());
-	} else {
-		fprintf(stderr, "%s [exit %d]\n", line.String(),
-			WIFEXITED(status) ? WEXITSTATUS(status) : -1);
-	}
-	return ok;
-}
-
-
 // --- OpenVPNBackend --------------------------------------------------------
 
 OpenVPNBackend::OpenVPNBackend()
@@ -1233,7 +1193,7 @@ OpenVPNBackend::_InstallRoutes(const BString& vpnServerIP)
 
 	// Snapshot the values harvested off the stderr stream behind
 	// fScanLock. We make local copies so the rest of this routine -- with
-	// its many run_route() calls -- can stay outside the lock.
+	// its many TunDevice::RunRoute() calls -- can stay outside the lock.
 	BString origGateway;
 	BString origGatewayIface;
 	BString tunPeer;
@@ -1266,7 +1226,7 @@ OpenVPNBackend::_InstallRoutes(const BString& vpnServerIP)
 		vpnServerIP.String(), "gw", origGateway.String(),
 		"netmask", "255.255.255.255", NULL
 	};
-	run_route(serverPin);
+	TunDevice::RunRoute(serverPin);
 
 	// 2) Drop the existing default route. We originally installed two /1
 	// halves on top of the wifi /0 hoping longest-prefix match would do
@@ -1278,14 +1238,14 @@ OpenVPNBackend::_InstallRoutes(const BString& vpnServerIP)
 		"route", "delete", origGatewayIface.String(), "inet", "0.0.0.0",
 		"gw", origGateway.String(), "netmask", "0.0.0.0", NULL
 	};
-	run_route(dropDefault);
+	TunDevice::RunRoute(dropDefault);
 
 	// 3) Install our own default route pointing at the tunnel peer.
 	const char* const addDefault[] = {
 		"route", "add", fTunInterface.String(), "inet", "0.0.0.0",
 		"gw", tunPeer.String(), "netmask", "0.0.0.0", NULL
 	};
-	run_route(addDefault);
+	TunDevice::RunRoute(addDefault);
 
 	fInstalledServerIP = vpnServerIP;
 	fInstalledTunPeer = tunPeer;
@@ -1320,13 +1280,13 @@ OpenVPNBackend::_RefreshTunRoute()
 		"route", "delete", fTunInterface.String(), "inet", "0.0.0.0",
 		"gw", fInstalledTunPeer.String(), "netmask", "0.0.0.0", NULL
 	};
-	run_route(dropOld);
+	TunDevice::RunRoute(dropOld);
 
 	const char* const addNew[] = {
 		"route", "add", fTunInterface.String(), "inet", "0.0.0.0",
 		"gw", newPeer.String(), "netmask", "0.0.0.0", NULL
 	};
-	run_route(addNew);
+	TunDevice::RunRoute(addNew);
 
 	printf("[OpenVPN] tunnel peer changed on reconnect: %s -> %s\n",
 		fInstalledTunPeer.String(), newPeer.String());
@@ -1367,7 +1327,7 @@ OpenVPNBackend::_ApplyRestore(const BString& tunIface, const BString& tunPeer,
 			"route", "delete", tunIface.String(), "inet", "0.0.0.0",
 			"gw", tunPeer.String(), "netmask", "0.0.0.0", NULL
 		};
-		run_route(dropTunDefault);
+		TunDevice::RunRoute(dropTunDefault);
 	}
 
 	// 2) Re-add the original default route the user had before we touched
@@ -1378,7 +1338,7 @@ OpenVPNBackend::_ApplyRestore(const BString& tunIface, const BString& tunPeer,
 			"route", "add", origGatewayIface.String(), "inet", "0.0.0.0",
 			"gw", origGateway.String(), "netmask", "0.0.0.0", NULL
 		};
-		run_route(restoreDefault);
+		TunDevice::RunRoute(restoreDefault);
 	}
 
 	// 3) Drop the server pin -- the dedicated /32 we added so openvpn's
@@ -1390,7 +1350,7 @@ OpenVPNBackend::_ApplyRestore(const BString& tunIface, const BString& tunPeer,
 			serverIP.String(), "gw", origGateway.String(),
 			"netmask", "255.255.255.255", NULL
 		};
-		run_route(dropPin);
+		TunDevice::RunRoute(dropPin);
 	}
 }
 

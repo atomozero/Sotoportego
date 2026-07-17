@@ -29,6 +29,17 @@ bool	RunIfconfig(const char* const argv[], bool quiet = false);
 // takes. Callers that need an address on the interface assign it afterwards.
 bool	ProbeFreeSlot(BString& outInterface, BString& outNode);
 
+// Synchronously run `route <args...>` (argv NULL-terminated). Logs the command
+// and its outcome; returns true on a zero exit. Used to install and remove the
+// routes that steer traffic into a tunnel.
+bool	RunRoute(const char* const argv[]);
+
+// Read the current IPv4 default route. On success fills `gateway` (the next-hop
+// IP) and `iface` (the physical interface it leaves on) and returns true.
+// Needed to pin a VPN server / WireGuard endpoint to the carrier so its own
+// packets don't loop back into the tunnel they carry.
+bool	DefaultGateway(BString& gateway, BString& iface);
+
 }	// namespace TunDevice
 
 
