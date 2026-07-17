@@ -29,6 +29,7 @@
 #include <Messenger.h>
 #include <Path.h>
 
+#include "TunDevice.h"
 #include "VPNProtocol.h"
 
 
@@ -94,49 +95,7 @@ escape_arg(const BString& value)
 }
 
 
-// Synchronously run `ifconfig <args...>` (where the variadic list ends in a
-// trailing NULL) and wait for it to finish. Returns true on a zero exit
-// status. Errors are logged to stderr but don't otherwise propagate -- the
-// caller decides whether to surface them as a connection-level error. When
-// `quiet` is true the child's stderr is redirected to /dev/null, which is
-// what the slot-picking probe wants: tun/N being missing or in a stuck
-// state is an expected outcome there, not a problem to surface.
-static bool
-run_ifconfig(const char* const argv[], bool quiet = false)
-{
-	pid_t pid = -1;
-	posix_spawn_file_actions_t actions;
-	posix_spawn_file_actions_t* actionsPtr = NULL;
-	bool actionsInited = false;
-	if (quiet && posix_spawn_file_actions_init(&actions) == 0) {
-		actionsInited = true;
-		if (posix_spawn_file_actions_addopen(&actions, STDERR_FILENO,
-				"/dev/null", O_WRONLY, 0) == 0) {
-			actionsPtr = &actions;
-		}
-	}
-
-	int rc = posix_spawnp(&pid, "ifconfig", actionsPtr, NULL,
-		(char* const*)argv, environ);
-	// Destroy whenever init succeeded, not just when we ended up passing the
-	// actions to spawn: if addopen failed, actionsPtr stayed NULL but the
-	// initialised object still had to be freed.
-	if (actionsInited)
-		posix_spawn_file_actions_destroy(&actions);
-
-	if (rc != 0) {
-		fprintf(stderr,
-			"[OpenVPN] spawn(ifconfig) failed: %s\n", strerror(rc));
-		return false;
-	}
-	int status = 0;
-	if (waitpid(pid, &status, 0) != pid)
-		return false;
-	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
-}
-
-
-// Same shape as run_ifconfig but for /bin/route. Used to install and
+// Same shape as TunDevice::RunIfconfig but for /bin/route. Used to install and
 // uninstall the routes we need to make redirect-gateway actually work on
 // Haiku. Returns false (and complains to stderr) if route exited non-zero,
 // because silent failures here are exactly what lets the system end up
@@ -252,51 +211,15 @@ OpenVPNBackend::Connect(const VPNProfile& profile)
 	printf("[OpenVPN] connect requested: profile='%s' config='%s'\n",
 		fProfile.fName.String(), fProfile.fConfigPath.String());
 
-	// Haiku publishes tunnel character devices at /dev/tun/N. ifconfig <name>
-	// up publishes that device through the kernel add-on. A previous session
-	// can leave a slot in a stuck state where ifconfig refuses to re-add it
-	// ("General system error"), so we delete first (idempotent: succeeds even
-	// if the slot wasn't there) and only then bring it up. We scan upward
-	// until we find a slot that takes, in case multiple slots are stuck.
+	// Pick a free Haiku tun/N slot and bring it up (see TunDevice::ProbeFreeSlot
+	// for the delete-then-up rationale).
 	//
 	// Note: we deliberately do NOT pre-assign an address (e.g. 0.0.0.0)
 	// before openvpn starts. With --dev-node /dev/tun/N openvpn opens the
 	// device very early; if the interface already has an address bound to
 	// it, that open blocks on Haiku and openvpn goes silent forever after
-	// `hold release`. Plain `up` works.
-	fTunInterface = "";
-	fTunNode = "";
-	for (int slot = 0; slot < 8; slot++) {
-		BString interfaceName;
-		interfaceName << "tun/" << slot;
-
-		// Quiet mode for the probe: an "Invalid Argument" on --delete
-		// just means the slot wasn't in the interface list, and a
-		// "General system error" on up means the kernel left this slot
-		// in a stuck state (typically after a kill -9 of openvpn) and
-		// only a reboot will free it. Both are expected outcomes of the
-		// probe; logging them as ifconfig errors makes a clean startup
-		// look broken.
-		const char* const ifconfigDelete[] = {
-			"ifconfig", "--delete", interfaceName.String(), NULL
-		};
-		run_ifconfig(ifconfigDelete, /*quiet=*/true);
-
-		const char* const ifconfigUp[] = {
-			"ifconfig", interfaceName.String(), "up", NULL
-		};
-		if (run_ifconfig(ifconfigUp, /*quiet=*/true)) {
-			fTunInterface = interfaceName;
-			fTunNode = "";
-			fTunNode << "/dev/tun/" << slot;
-			printf("[OpenVPN] using %s (%s)\n",
-				fTunInterface.String(), fTunNode.String());
-			break;
-		}
-		printf("[OpenVPN] %s is stuck (kernel-side); trying next slot\n",
-			interfaceName.String());
-	}
-	if (fTunInterface.Length() == 0) {
+	// `hold release`. The plain `up` that ProbeFreeSlot does works.
+	if (!TunDevice::ProbeFreeSlot(fTunInterface, fTunNode)) {
 		_SetState(VPN_STATE_ERROR,
 			"no usable tun slot (every /dev/tun/N is stuck; reboot needed?)");
 		return B_ERROR;
@@ -1020,7 +943,7 @@ OpenVPNBackend::_Cleanup(bool wait)
 		const char* const ifconfigDelete[] = {
 			"ifconfig", "--delete", fTunInterface.String(), NULL
 		};
-		run_ifconfig(ifconfigDelete);
+		TunDevice::RunIfconfig(ifconfigDelete);
 	}
 
 	fLocalIP = "";
@@ -1152,7 +1075,7 @@ OpenVPNBackend::_HandleManagementEvent(const OpenVPNEvent& event)
 						fLocalIP.String(), tunPeerSnapshot.String(),
 						"mtu", "1500", "up", NULL
 					};
-					run_ifconfig(ifconfigUp);
+					TunDevice::RunIfconfig(ifconfigUp);
 				}
 				// All the values needed for the route fix-up have been
 				// scanned out of the preceding log lines (ROUTE_GATEWAY

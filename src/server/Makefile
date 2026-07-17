@@ -26,6 +26,7 @@ SRCS = \
 	../backend/VPNBackend.cpp \
 	../backend/OpenVPNBackend.cpp \
 	../backend/OpenVPNManagement.cpp \
+	../backend/TunDevice.cpp \
 	../backend/WireGuardBackend.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/WireGuardConfigParser.cpp \

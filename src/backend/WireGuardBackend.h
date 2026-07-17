@@ -60,10 +60,13 @@ private:
 			void				_SetState(VPNState state,
 									const char* detail = NULL);
 
-	// --- data plane (TODO(wireguard): implement) -----------------------
-	// Bring up the first free tun/N slot and assign the [Interface] Address.
-	// The slot-probe logic can be shared with OpenVPNBackend once factored
-	// out; stubbed for the skeleton.
+	// Base64-decode the config's key material into the fixed 32-byte buffers
+	// below, validating each length. Returns false on any malformed key.
+			bool				_DecodeKeys();
+
+	// --- data plane (handshake/transport still TODO(wireguard)) ---------
+	// Bring up the first free tun/N slot (via TunDevice) and assign the
+	// [Interface] Address to it.
 			bool				_BringUpTun();
 	// Bind a UDP socket toward the [Peer] Endpoint.
 			bool				_OpenUdpSocket();
@@ -79,6 +82,11 @@ private:
 			VPNState			fState;
 			VPNStats			fStats;
 			WireGuardConfig		fConfig;
+	// Raw key material, base64-decoded from fConfig by _DecodeKeys().
+			uint8				fPrivateKey[32];
+			uint8				fPeerPublicKey[32];
+			uint8				fPresharedKey[32];
+			bool				fHavePresharedKey;
 			BString				fLocalIP;		// in-tunnel Address
 			BString				fRemoteIP;		// Endpoint host
 
