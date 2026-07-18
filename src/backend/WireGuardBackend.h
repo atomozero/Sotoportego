@@ -26,16 +26,18 @@ class BMessageRunner;
 //   2. DONE -- bring up a tun/N slot (via TunDevice), bind a UDP socket.
 //   3. DONE -- the Noise_IKpsk2 handshake (see WireGuardCrypto), validated
 //      against a reference responder.
-//   4. THIS STEP -- transport: a reader thread runs the handshake, then
-//      forwards tun<->UDP, encrypting/decrypting type-4 data messages and
-//      sending PersistentKeepalives, and posts CONNECTED.
-//   5. THIS STEP -- install AllowedIPs as routes (via TunDevice), pinning the
-//      endpoint to the carrier for a full tunnel so our UDP doesn't loop.
-//      Still TODO after this: key rotation (rekey ~120s) and a replay window.
+//   4. DONE -- transport: a reader thread runs the handshake, then forwards
+//      tun<->UDP, encrypting/decrypting type-4 data messages, sending
+//      PersistentKeepalives, and posting CONNECTED.
+//   5. DONE -- install AllowedIPs as routes (via TunDevice), pinning the
+//      endpoint to the carrier for a full tunnel; plus session rekey (~120s)
+//      and an RFC 6479 anti-replay window.
 //
-// State mutations stay on the daemon looper: the reader thread posts private
-// messages (connected / stats / exited) back via BMessenger(this), mirroring
-// OpenVPNBackend.
+// The protocol is complete and validated against a real WireGuard server
+// (handshake + transport); what still needs on-device confirmation is Haiku's
+// tun read/write framing. State mutations stay on the daemon looper: the reader
+// thread posts private messages (connected / stats / exited) back via
+// BMessenger(this), mirroring OpenVPNBackend.
 class WireGuardBackend : public VPNBackend {
 public:
 								WireGuardBackend();
@@ -79,9 +81,15 @@ private:
 									size_t plainLen, uint8* out);
 	// Decrypt a received type-4 message with fRecvKey into `out` (needs
 	// packetLen bytes). Returns the plaintext IP-packet length (0 for a
-	// keepalive) or -1 if the packet isn't a valid data message.
+	// keepalive) or -1 if the packet isn't valid or is a replay.
 			ssize_t				_Decapsulate(const uint8* packet,
 									size_t packetLen, uint8* out);
+
+	// Anti-replay sliding window (RFC 6479) over the received transport
+	// counters. _ReplayReset clears it at each (re)handshake; _ReplayValidate
+	// accepts-and-records a fresh counter or rejects an old/duplicate one.
+			void				_ReplayReset();
+			bool				_ReplayValidate(uint64 counter);
 
 	// Install / remove the AllowedIPs routes (and, for a full tunnel, the
 	// endpoint pin + default-route swap), all via TunDevice::RunRoute.
@@ -138,7 +146,11 @@ private:
 			thread_id			fReader;		// -1 when no thread alive
 	// Monotonic per-packet counter for the transport nonce (send direction).
 			uint64				fSendCounter;
-	// Reserved for a future rekey/keepalive BMessageRunner. NULL when idle.
+	// Receive-side anti-replay window: fReplayCounter is the highest counter
+	// seen (1-based), fReplayBitmap the 8192-bit seen-set (RFC 6479).
+			uint64				fReplayCounter;
+			uint64				fReplayBitmap[128];
+	// Reserved for a future keepalive BMessageRunner. NULL when idle.
 			BMessageRunner*		fTimer;
 			bool				fStopRequested;
 };

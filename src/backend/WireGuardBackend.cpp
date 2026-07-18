@@ -38,6 +38,17 @@ static const uint32 kMsgWgReaderExited	= 'wgRx';
 static const bigtime_t kReaderPollInterval	= 250000;	// 0.25s select timeout
 static const int kHandshakeAttempts			= 3;
 
+// WireGuard session timers: rekey after 120s, and stop using the keys at 180s.
+static const bigtime_t kRekeyAfterTime		= 120LL * 1000000;
+static const bigtime_t kRejectAfterTime		= 180LL * 1000000;
+
+// Anti-replay window (RFC 6479), 64-bit blocks.
+static const uint64 kReplayBits				= 64;
+static const uint64 kReplayBlocks			= 128;		// 8192-bit window
+static const uint64 kReplayWindow			= kReplayBits * (kReplayBlocks - 1);
+static const uint64 kRejectAfterMessages	= 0xFFFFFFFFFFFFFFFFULL
+												- (1ULL << 13) - 1;
+
 
 // Decode standard base64 into `out` (capacity `outCap`), reporting the byte
 // count in `outLen`. Returns false on a stray character or overflow. WireGuard
@@ -103,9 +114,11 @@ WireGuardBackend::WireGuardBackend()
 	fTunFd(-1),
 	fReader(-1),
 	fSendCounter(0),
+	fReplayCounter(0),
 	fTimer(NULL),
 	fStopRequested(false)
 {
+	memset(fReplayBitmap, 0, sizeof(fReplayBitmap));
 	memset(fPrivateKey, 0, sizeof(fPrivateKey));
 	memset(fPeerPublicKey, 0, sizeof(fPeerPublicKey));
 	memset(fPresharedKey, 0, sizeof(fPresharedKey));
@@ -582,18 +595,31 @@ WireGuardBackend::_PerformHandshake()
 	}
 
 	// --- response ---
-	// Bounded blocking wait. TODO(wireguard) step 4: move onto the reader
-	// thread and retransmit the initiation until this lands.
+	// Blocking recv with a timeout. The transport loop leaves the socket
+	// non-blocking, so force blocking here; and skip any data/cookie packets
+	// that arrive interleaved (as they can during a mid-session rekey) until
+	// the handshake response lands or we time out.
+	int flags = fcntl(fUdpSocket, F_GETFL, 0);
+	if (flags >= 0)
+		fcntl(fUdpSocket, F_SETFL, flags & ~O_NONBLOCK);
 	struct timeval tv;
 	tv.tv_sec = 5;
 	tv.tv_usec = 0;
 	setsockopt(fUdpSocket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
 	uint8 resp[256];
-	ssize_t got = recv(fUdpSocket, resp, sizeof(resp), 0);
+	ssize_t got = -1;
+	for (int tries = 0; tries < 64; tries++) {
+		got = recv(fUdpSocket, resp, sizeof(resp), 0);
+		if (got <= 0)
+			break;							// timeout or error
+		if (got == 92 && resp[0] == 2)
+			break;							// the handshake response
+		// otherwise a data/cookie packet; ignore and keep waiting
+	}
 	if (got != 92 || resp[0] != 2) {
 		fprintf(stderr,
-			"[WireGuard] no/invalid handshake response (got %ld bytes)\n",
+			"[WireGuard] no/invalid handshake response (last got %ld)\n",
 			(long)got);
 		return false;
 	}
@@ -671,12 +697,55 @@ WireGuardBackend::_Decapsulate(const uint8* packet, size_t packetLen,
 		return -1;
 	uint64 counter = load64_le(packet + 8);
 	size_t cipherLen = packetLen - 16;		// ciphertext + 16-byte tag
-	// TODO(wireguard): enforce the sliding replay window on `counter`.
 	if (!wg::AeadDecrypt(fRecvKey, counter, packet + 16, cipherLen, NULL, 0,
 			out))
 		return -1;
+	// Only after the tag verifies (so an attacker can't poison the window with
+	// forged counters) do we enforce anti-replay.
+	if (!_ReplayValidate(counter))
+		return -1;
 	size_t plainLen = cipherLen - 16;		// still padded
 	return (ssize_t)ip_packet_length(out, plainLen);
+}
+
+
+void
+WireGuardBackend::_ReplayReset()
+{
+	fReplayCounter = 0;
+	memset(fReplayBitmap, 0, sizeof(fReplayBitmap));
+}
+
+
+bool
+WireGuardBackend::_ReplayValidate(uint64 counter)
+{
+	// RFC 6479 sliding-window replay check adapted to WireGuard's 0-based
+	// 64-bit counters. Returns true (and records the counter) for a fresh
+	// packet; false for one that's a duplicate or below the window.
+	if (counter >= kRejectAfterMessages)
+		return false;
+	counter += 1;								// algorithm is 1-based
+	if (kReplayWindow + counter < fReplayCounter)
+		return false;							// too old
+
+	uint64 index = counter >> 6;			// / 64
+	if (counter > fReplayCounter) {
+		uint64 indexCurrent = fReplayCounter >> 6;
+		uint64 top = index - indexCurrent;
+		if (top > kReplayBlocks)
+			top = kReplayBlocks;
+		for (uint64 i = 1; i <= top; i++)
+			fReplayBitmap[(i + indexCurrent) & (kReplayBlocks - 1)] = 0;
+		fReplayCounter = counter;
+	}
+
+	index &= (kReplayBlocks - 1);
+	uint64 bit = 1ULL << (counter & (kReplayBits - 1));
+	if (fReplayBitmap[index] & bit)
+		return false;							// already seen
+	fReplayBitmap[index] |= bit;
+	return true;
 }
 
 
@@ -876,6 +945,7 @@ WireGuardBackend::_RunReaderLoop()
 	}
 
 	fSendCounter = 0;
+	_ReplayReset();
 	printf("[WireGuard] handshake OK (session %u <-> %u)\n",
 		(unsigned)fSenderIndex, (unsigned)fReceiverIndex);
 	self.SendMessage(kMsgWgConnected);
@@ -888,6 +958,7 @@ WireGuardBackend::_RunReaderLoop()
 		? (bigtime_t)fConfig.peer.persistentKeepalive * 1000000LL : 0;
 	bigtime_t lastSend = system_time();
 	bigtime_t lastStats = lastSend;
+	bigtime_t handshakeTime = lastSend;		// for the rekey / reject timers
 	uint64 bytesIn = 0;
 	uint64 bytesOut = 0;
 	// Diagnostic: dump the head of the first few tun reads so the on-device
@@ -967,6 +1038,32 @@ WireGuardBackend::_RunReaderLoop()
 			stats.AddInt64("out", (int64)bytesOut);
 			self.SendMessage(&stats);
 			lastStats = now;
+		}
+
+		// Rekey: after 120s renegotiate a fresh session (new keys/indices) so
+		// the tunnel survives past REJECT_AFTER_TIME. The handshake blocks the
+		// loop briefly (sub-second typically) and skips any interleaved data.
+		if (now - handshakeTime >= kRekeyAfterTime && !fStopRequested) {
+			printf("[WireGuard] rekeying (session age %llds)\n",
+				(long long)((now - handshakeTime) / 1000000));
+			bool rekeyed = _PerformHandshake();
+			// _PerformHandshake left the socket blocking; restore non-blocking.
+			fcntl(fUdpSocket, F_SETFL,
+				fcntl(fUdpSocket, F_GETFL, 0) | O_NONBLOCK);
+			if (rekeyed) {
+				fSendCounter = 0;
+				_ReplayReset();
+				handshakeTime = system_time();
+				lastSend = handshakeTime;
+				printf("[WireGuard] rekey OK (session %u <-> %u)\n",
+					(unsigned)fSenderIndex, (unsigned)fReceiverIndex);
+			} else if (now - handshakeTime >= kRejectAfterTime) {
+				// Keys are past REJECT_AFTER_TIME and we can't renew them; drop
+				// the session (the daemon's auto-reconnect may re-establish it).
+				fprintf(stderr,
+					"[WireGuard] rekey failed and session expired; dropping\n");
+				break;
+			}
 		}
 	}
 
