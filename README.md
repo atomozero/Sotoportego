@@ -58,9 +58,9 @@ If Sotoportego saves you time, consider supporting development: [![Buy Me A Coff
   RFC 6479 anti-replay window, and `AllowedIPs` routing. Validated end to end
   on Haiku against a real WireGuard server: a live session carries traffic
   through the tunnel (confirmed via the exit country), reading raw IPv4 off
-  `tun/N`. Import a `.conf` the same way as an `.ovpn`. Split tunnels work
-  today; a full tunnel (`0.0.0.0/0`) still needs the config's DNS applied (not
-  done yet), and IPv6 isn't routed.
+  `tun/N`. Import a `.conf` the same way as an `.ovpn`. Both split and full
+  tunnels work — a full tunnel (`0.0.0.0/0`) swaps the default route and
+  applies the config's DNS (restored on disconnect). IPv6 isn't routed yet.
 * **Asynchronous status broadcasts** — `kMsgStatusUpdate` /
   `kMsgStatsUpdate` carry state, detail, both ends of the tunnel and a
   throughput snapshot to every subscribed client.
@@ -370,9 +370,6 @@ scripts/       verify-tunnel.sh — shell check that the tunnel is
 
 ## Roadmap
 
-* WireGuard full-tunnel support — split tunnels already carry traffic on
-  device; a full tunnel (`0.0.0.0/0`) needs the config's DNS applied so name
-  resolution survives the default-route swap.
 * IPv6 routing fix-up (both backends are IPv4-only today).
 * IPSec.
 
