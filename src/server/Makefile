@@ -31,6 +31,7 @@ SRCS = \
 	../backend/WireGuardCrypto.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/WireGuardConfigParser.cpp \
+	../common/WireGuardRoutes.cpp \
 	../common/CountryCentroids.cpp \
 	../common/VPNProfile.cpp \
 	../common/VPNState.cpp \

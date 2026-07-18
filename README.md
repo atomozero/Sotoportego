@@ -60,7 +60,10 @@ If Sotoportego saves you time, consider supporting development: [![Buy Me A Coff
   through the tunnel (confirmed via the exit country), reading raw IPv4 off
   `tun/N`. Import a `.conf` the same way as an `.ovpn`. Both split and full
   tunnels work — a full tunnel (`0.0.0.0/0`) swaps the default route and
-  applies the config's DNS (restored on disconnect). IPv6 isn't routed yet.
+  applies the config's DNS (restored on disconnect). IPv6 `AllowedIPs` are
+  logged and skipped rather than routed: Haiku's tun driver has no `AF_INET6`
+  (an inet6 address can't be assigned to a `tun/N` slot), so IPv6 can't be
+  carried through the tunnel yet — see the roadmap.
 * **Asynchronous status broadcasts** — `kMsgStatusUpdate` /
   `kMsgStatsUpdate` carry state, detail, both ends of the tunnel and a
   throughput snapshot to every subscribed client.
@@ -370,7 +373,15 @@ scripts/       verify-tunnel.sh — shell check that the tunnel is
 
 ## Roadmap
 
-* IPv6 routing fix-up (both backends are IPv4-only today).
+* IPv6 routing — **blocked upstream in Haiku**, not just unimplemented here.
+  Haiku's kernel `tunnel` driver rejects `AF_INET6`: an inet6 address can't be
+  assigned to a `tun/N` interface (`ifconfig … inet6 …` → *Invalid Argument*),
+  though `loop` accepts the exact same syntax, and `route … inet6 …` works in
+  general. So both backends are IPv4-only until the driver gains IPv6 support.
+  Today WireGuard logs IPv6 `AllowedIPs` and skips them; on an IPv6-capable
+  host a `::/0` there means IPv6 traffic bypasses the tunnel — a null-route
+  (`route … reject`) leak-guard is the mitigation to add once there's an
+  IPv6-capable box to validate it on.
 * IPSec.
 
 

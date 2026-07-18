@@ -28,6 +28,7 @@
 #include "TunDevice.h"
 #include "VPNProfile.h"
 #include "WireGuardCrypto.h"
+#include "WireGuardRoutes.h"
 
 
 // Private 'what' codes the reader thread posts back to the looper, so all
@@ -375,8 +376,9 @@ WireGuardBackend::_BringUpTun()
 
 	// Assign the [Interface] Address. WG configs give a CIDR ("10.2.0.2/32");
 	// take the address part and set it as a point-to-point self so packets for
-	// AllowedIPs can be routed onto tun/N later. IPv4 only for now.
-	// TODO(wireguard): handle IPv6 Address lines and multiple addresses.
+	// AllowedIPs can be routed onto tun/N later. IPv4 only: Haiku's tun driver
+	// rejects AF_INET6 (an inet6 address can't be assigned to a tun/N slot,
+	// verified on device), so an IPv6 Address line can't be brought up here.
 	BString ip = fConfig.address;
 	int32 slash = ip.FindFirst('/');
 	if (slash >= 0)
@@ -755,66 +757,41 @@ WireGuardBackend::_ReplayValidate(uint64 counter)
 }
 
 
-// One AllowedIPs entry, resolved to the network + dotted netmask the Haiku
-// `route` command wants.
-struct Cidr {
-	BString	net;
-	BString	mask;
-	bool	isDefault;		// 0.0.0.0/0 -- the full-tunnel catch-all
-};
-
-
-// Parse "10.0.0.0/24, 0.0.0.0/0" into Cidr entries. IPv4 only for now; IPv6
-// entries (containing ':') are skipped -- TODO(wireguard).
-static std::vector<Cidr>
-parse_allowed_ips(const BString& allowed)
-{
-	std::vector<Cidr> out;
-	int32 start = 0;
-	while (start <= allowed.Length()) {
-		int32 comma = allowed.FindFirst(',', start);
-		int32 end = (comma < 0) ? allowed.Length() : comma;
-		BString token;
-		allowed.CopyInto(token, start, end - start);
-		token.Trim();
-		start = end + 1;
-		if (token.Length() == 0 || token.FindFirst(':') >= 0)
-			continue;
-
-		BString net = token;
-		int prefix = 32;
-		int32 slash = token.FindFirst('/');
-		if (slash >= 0) {
-			net.Truncate(slash);
-			BString p;
-			token.CopyInto(p, slash + 1, token.Length() - slash - 1);
-			prefix = atoi(p.String());
-		}
-		net.Trim();
-		if (net.Length() == 0 || prefix < 0 || prefix > 32)
-			continue;
-
-		uint32 m = (prefix == 0) ? 0 : (0xFFFFFFFFu << (32 - prefix));
-		Cidr c;
-		c.net = net;
-		c.mask.SetToFormat("%u.%u.%u.%u", (m >> 24) & 0xFF, (m >> 16) & 0xFF,
-			(m >> 8) & 0xFF, m & 0xFF);
-		c.isDefault = (net == "0.0.0.0" && prefix == 0);
-		out.push_back(c);
-	}
-	return out;
-}
-
-
 void
 WireGuardBackend::_InstallRoutes()
 {
 	if (fRoutesInstalled)
 		return;
 
-	std::vector<Cidr> cidrs = parse_allowed_ips(fConfig.peer.allowedIPs);
+	std::vector<AllowedRoute> cidrs;
+	std::vector<BString> skippedV6;
+	WireGuardRoutes::ParseAllowedIPs(fConfig.peer.allowedIPs, cidrs, skippedV6);
+
+	// Surface any IPv6 AllowedIPs we can't honour: Haiku's tun driver has no
+	// AF_INET6, so IPv6 can't be routed through the tunnel. If the config asked
+	// for a full IPv6 tunnel (::/0), that traffic would leak outside the tunnel
+	// on an IPv6-capable host -- warn loudly rather than fail silently.
+	if (!skippedV6.empty()) {
+		BString list;
+		bool v6Default = false;
+		for (size_t i = 0; i < skippedV6.size(); i++) {
+			if (i > 0)
+				list << ", ";
+			list << skippedV6[i];
+			if (skippedV6[i] == "::/0")
+				v6Default = true;
+		}
+		fprintf(stderr, "[WireGuard] IPv6 AllowedIPs not routed (Haiku tun has "
+			"no AF_INET6): %s\n", list.String());
+		if (v6Default) {
+			fprintf(stderr, "[WireGuard] warning: ::/0 requested but IPv6 can't "
+				"be tunnelled here; IPv6 traffic will bypass the VPN on an "
+				"IPv6-capable host\n");
+		}
+	}
+
 	if (cidrs.empty()) {
-		printf("[WireGuard] no AllowedIPs to route\n");
+		printf("[WireGuard] no IPv4 AllowedIPs to route\n");
 		return;
 	}
 
@@ -886,7 +863,9 @@ WireGuardBackend::_RemoveRoutes()
 
 	_RestoreDns();
 
-	std::vector<Cidr> cidrs = parse_allowed_ips(fConfig.peer.allowedIPs);
+	std::vector<AllowedRoute> cidrs;
+	std::vector<BString> skippedV6;		// unused on teardown (never routed)
+	WireGuardRoutes::ParseAllowedIPs(fConfig.peer.allowedIPs, cidrs, skippedV6);
 	for (size_t i = 0; i < cidrs.size(); i++) {
 		const char* const del[] = {
 			"route", "delete", fTunInterface.String(), "inet",
