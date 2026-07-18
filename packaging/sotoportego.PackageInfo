@@ -1,0 +1,26 @@
+name			sotoportego
+version			0.1.0-1
+architecture	x86_64
+summary			"Native VPN client for Haiku"
+description		"Native Haiku VPN client: a privilege-separated background \
+daemon owns the VPN lifecycle, with a Haiku-native GUI front-end and a CLI \
+test client driving it over BMessage. OpenVPN is wired in end to end (.ovpn \
+import, live management-interface session, tun/N set-up, routing fix-up), and \
+a from-scratch in-process WireGuard backend (Noise IKpsk2 handshake, \
+ChaCha20-Poly1305 transport, rekey, anti-replay, AllowedIPs routing) ships \
+alongside. A VPNGate map browser plots the public catalogue on a pan/zoom \
+world map."
+packager		"atomozero <atomozero@proton.me>"
+vendor			"atomozero"
+copyrights		"2026 atomozero"
+licenses		"MIT"
+
+provides {
+	sotoportego = 0.1.0
+}
+
+requires {
+	haiku >= r1~beta5
+	cmd:openvpn
+	lib:libcrypto >= 3
+}
