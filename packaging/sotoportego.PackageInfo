@@ -1,5 +1,5 @@
 name			sotoportego
-version			0.1.0-1
+version			0.1.1-1
 architecture	x86_64
 summary			"Native VPN client for Haiku"
 description		"Native Haiku VPN client: a privilege-separated background \
@@ -16,7 +16,7 @@ copyrights		"2026 atomozero"
 licenses		"MIT"
 
 provides {
-	sotoportego = 0.1.0
+	sotoportego = 0.1.1
 }
 
 requires {
