@@ -890,6 +890,9 @@ WireGuardBackend::_RunReaderLoop()
 	bigtime_t lastStats = lastSend;
 	uint64 bytesIn = 0;
 	uint64 bytesOut = 0;
+	// Diagnostic: dump the head of the first few tun reads so the on-device
+	// framing (raw IP vs a leading address-family word) is visible in the log.
+	int tunReadsLogged = 0;
 
 	uint8 plain[2048];
 	uint8 wire[2048];
@@ -915,6 +918,21 @@ WireGuardBackend::_RunReaderLoop()
 		if (r > 0 && FD_ISSET(fTunFd, &rfds)) {
 			ssize_t n = read(fTunFd, plain, 1500);
 			if (n > 0) {
+				if (tunReadsLogged < 3) {
+					BString head;
+					for (ssize_t i = 0; i < n && i < 8; i++) {
+						char b[4];
+						snprintf(b, sizeof(b), " %02x", plain[i]);
+						head << b;
+					}
+					int version = plain[0] >> 4;
+					const char* guess = (version == 4) ? "raw IPv4"
+						: (version == 6) ? "raw IPv6"
+						: "NOT raw IP -- likely a leading address-family word";
+					printf("[WireGuard] tun read %ld bytes:%s  (first nibble "
+						"%d -> %s)\n", (long)n, head.String(), version, guess);
+					tunReadsLogged++;
+				}
 				size_t len = _Encapsulate(plain, (size_t)n, wire);
 				if (len > 0 && send(fUdpSocket, wire, len, 0) == (ssize_t)len) {
 					bytesOut += (uint64)n;
