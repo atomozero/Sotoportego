@@ -844,6 +844,17 @@ MainWindow::_RefreshDetails()
 			? selected->fProtocol.String() : "\xe2\x80\x94");
 	}
 
+	if (fBackendLabel != NULL) {
+		const char* backend = "\xe2\x80\x94";
+		if (hasSelection) {
+			backend = selected->fBackendType == VPN_BACKEND_WIREGUARD
+				? "WireGuard"
+				: selected->fBackendType == VPN_BACKEND_IPSEC
+					? "IPSec" : "OpenVPN";
+		}
+		fBackendLabel->SetText(backend);
+	}
+
 	if (fActionButton != NULL) {
 		bool isBusy = fState == VPN_STATE_CONNECTING
 			|| fState == VPN_STATE_AUTHENTICATING
