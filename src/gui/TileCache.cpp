@@ -134,7 +134,7 @@ TileCache::MessageReceived(BMessage* msg)
 						}
 						execlp("curl", "curl",
 							"-s", "-m", "10",
-							"-A", "Sotoportego/0.1.1 (Haiku; VPN map)",
+							"-A", "Sotoportego/0.1.2 (Haiku; VPN map)",
 							"-o", path.String(),
 							url.String(),
 							(char*)NULL);

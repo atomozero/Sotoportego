@@ -12,7 +12,7 @@ set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
-VERSION=0.1.1-1
+VERSION=0.1.2-1
 ARCH=x86_64
 OBJ=objects.$ARCH-cc13-release
 OUT="$ROOT/dist/sotoportego-$VERSION-$ARCH.hpkg"

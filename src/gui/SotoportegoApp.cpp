@@ -37,7 +37,7 @@ SotoportegoApp::AboutRequested()
 	if (icon != NULL)
 		about->SetIcon(icon);
 
-	about->SetVersion("0.1.1 (development)");
+	about->SetVersion("0.1.2 (development)");
 	about->AddCopyright(2026, "atomozero");
 	about->AddDescription(
 		"Sotoportego is a native VPN client for Haiku. The daemon owns the "
