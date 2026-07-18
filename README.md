@@ -148,6 +148,12 @@ make clean                 # removes all build artifacts
 The produced binaries land in each subdirectory's
 `objects.x86_64-cc13-release/` folder.
 
+To bundle them into a Haiku package, run `./scripts/make-hpkg.sh` — it
+builds everything and writes `dist/sotoportego-<version>-x86_64.hpkg`
+(the three binaries under `apps/Sotoportego/`). Install it with
+`pkgman install dist/sotoportego-*.hpkg`, or drop the `.hpkg` into
+`~/config/packages/`.
+
 
 ## Run
 
