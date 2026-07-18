@@ -959,6 +959,8 @@ WireGuardBackend::_RunReaderLoop()
 	bigtime_t lastSend = system_time();
 	bigtime_t lastStats = lastSend;
 	bigtime_t handshakeTime = lastSend;		// for the rekey / reject timers
+	printf("[WireGuard] transport loop running (tun=%d udp=%d keepalive=%llds)\n",
+		fTunFd, fUdpSocket, (long long)(keepalive / 1000000));
 	uint64 bytesIn = 0;
 	uint64 bytesOut = 0;
 	// Diagnostic: dump the head of the first few tun reads so the on-device
@@ -981,6 +983,8 @@ WireGuardBackend::_RunReaderLoop()
 		if (r < 0) {
 			if (errno == EINTR)
 				continue;
+			fprintf(stderr, "[WireGuard] select() failed on {tun=%d, udp=%d}: "
+				"%s -- ending session\n", fTunFd, fUdpSocket, strerror(errno));
 			break;
 		}
 
@@ -1067,6 +1071,8 @@ WireGuardBackend::_RunReaderLoop()
 		}
 	}
 
+	printf("[WireGuard] transport loop exited (stopRequested=%s)\n",
+		fStopRequested ? "yes" : "no");
 	BMessage exited(kMsgWgReaderExited);
 	exited.AddString("detail", "");		// clean stop
 	self.SendMessage(&exited);
