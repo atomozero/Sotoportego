@@ -96,6 +96,13 @@ private:
 			void				_InstallRoutes();
 			void				_RemoveRoutes();
 
+	// Point the system resolver at the tunnel's DNS for a full tunnel, and
+	// restore it on teardown. The original resolv.conf is moved aside so a
+	// crash can't leave name resolution stuck on a dead tunnel (recovered at
+	// startup by RecoverIfCrashed).
+			void				_ApplyDns();
+			void				_RestoreDns();
+
 	// Reader thread: handshake, then tun<->UDP forwarding until stopped.
 			void				_StartReader();
 			int32				_RunReaderLoop();

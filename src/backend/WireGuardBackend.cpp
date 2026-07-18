@@ -19,6 +19,8 @@
 
 #include <vector>
 
+#include <Entry.h>
+#include <File.h>
 #include <Message.h>
 #include <MessageRunner.h>
 #include <Messenger.h>
@@ -318,8 +320,12 @@ WireGuardBackend::MessageReceived(BMessage* message)
 void
 WireGuardBackend::RecoverIfCrashed()
 {
-	// TODO(wireguard): if a previous run died with a tun slot up and routes
-	// installed, roll them back here (mirrors OpenVPNBackend::RecoverIfCrashed).
+	// A previous run that died mid-session may have left the resolver pointing
+	// at the tunnel's DNS -- restore the saved original so name resolution
+	// works again before the user even reconnects.
+	// TODO(wireguard): also roll back a leftover tun slot / routes (needs a
+	// session file, as OpenVPNBackend has).
+	_RestoreDns();
 }
 
 
@@ -862,6 +868,12 @@ WireGuardBackend::_InstallRoutes()
 		TunDevice::RunRoute(add);
 	}
 
+	// For a full tunnel, point the resolver at the tunnel's DNS: otherwise
+	// name resolution would try to reach the carrier's resolver through the
+	// tunnel (which the peer won't route) and every lookup would fail.
+	if (fReplacedDefault)
+		_ApplyDns();
+
 	fRoutesInstalled = true;
 }
 
@@ -871,6 +883,8 @@ WireGuardBackend::_RemoveRoutes()
 {
 	if (!fRoutesInstalled)
 		return;
+
+	_RestoreDns();
 
 	std::vector<Cidr> cidrs = parse_allowed_ips(fConfig.peer.allowedIPs);
 	for (size_t i = 0; i < cidrs.size(); i++) {
@@ -900,6 +914,65 @@ WireGuardBackend::_RemoveRoutes()
 
 	fRoutesInstalled = false;
 	fReplacedDefault = false;
+}
+
+
+// Haiku's resolver reads a standard resolv.conf. We move the original aside
+// (once) so a crash can't strand DNS on a dead tunnel, then write our own.
+static const char* const kResolvConf
+	= "/boot/system/settings/network/resolv.conf";
+static const char* const kResolvBackup
+	= "/boot/system/settings/network/resolv.conf.sotoportego";
+
+
+void
+WireGuardBackend::_ApplyDns()
+{
+	// First IPv4 nameserver from the [Interface] DNS list ("10.2.0.1, ::1").
+	BString ns;
+	int32 start = 0;
+	while (start <= fConfig.dns.Length()) {
+		int32 comma = fConfig.dns.FindFirst(',', start);
+		int32 end = (comma < 0) ? fConfig.dns.Length() : comma;
+		BString tok;
+		fConfig.dns.CopyInto(tok, start, end - start);
+		tok.Trim();
+		start = end + 1;
+		if (tok.Length() > 0 && tok.FindFirst(':') < 0) {	// IPv4 only for now
+			ns = tok;
+			break;
+		}
+	}
+	if (ns.Length() == 0)
+		return;
+
+	// Preserve the original once; a leftover backup means a prior session's
+	// original -- keep it rather than saving our own modified file over it.
+	BEntry backup(kResolvBackup);
+	if (!backup.Exists())
+		rename(kResolvConf, kResolvBackup);
+
+	BFile out(kResolvConf, B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+	if (out.InitCheck() != B_OK) {
+		fprintf(stderr, "[WireGuard] could not write %s\n", kResolvConf);
+		return;
+	}
+	BString content;
+	content << "# Set by Sotoportego for the WireGuard tunnel\nnameserver "
+		<< ns << "\n";
+	out.Write(content.String(), content.Length());
+	printf("[WireGuard] DNS -> %s (through the tunnel)\n", ns.String());
+}
+
+
+void
+WireGuardBackend::_RestoreDns()
+{
+	BEntry backup(kResolvBackup);
+	if (backup.Exists()) {
+		rename(kResolvBackup, kResolvConf);		// overwrites our version
+		printf("[WireGuard] DNS restored\n");
+	}
 }
 
 
