@@ -15,6 +15,28 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 2: HTTP/2 framing + connection bootstrap (live)
+- Did: Added `src/backend/tailscale/TSHttp2.{h,cpp}` — a minimal HTTP/2 client
+  over `ControlConn`. It (1) consumes the early payload (magic `\xff\xff\xffTS` +
+  BE32 length + JSON `tailcfg.EarlyNoise`, capturing the `nodeKeyChallenge`),
+  (2) reads/writes HTTP/2 frames with an internal reassembly buffer (records and
+  frames don't align — `_Fill`/`_ReadRaw` refill from `ReadRecord` and compact),
+  and (3) runs `Bootstrap()`: sends the client preface + our SETTINGS, ACKs the
+  server's SETTINGS and waits for the ACK of ours. Frame header pack/unpack
+  (24-bit length, type, flags, 31-bit stream id) and the frame-type/flag enums
+  are all in place.
+- Build: **green on-Haiku.** **LIVE test against controlplane.tailscale.com**: the
+  full HTTP/2 connection comes up over the Noise record stream — early payload
+  parsed (`nodeKeyChallenge: chalpub:10183250…`) and the SETTINGS handshake
+  completes in both directions (we ACK theirs, they ACK ours). So our frame
+  reassembly, framing and preface are accepted by the production server.
+- Next: HPACK. Add the static table + an encoder (indexed names + literal values,
+  no Huffman needed to send) and a decoder (static/dynamic table + Huffman, needed
+  to read the server's response headers). Then a request helper: HEADERS
+  (`:method POST`, `:path /machine/register`, `:authority`, `:scheme https`,
+  content-type/length) + DATA (JSON `RegisterRequest`), read HEADERS(`:status`) +
+  DATA(`RegisterResponse`), and surface the `AuthURL`.
+
 ## 2026-08-03 — Phase 2: encrypted record stream verified live (+ protocol recon)
 - Did: Added `src/backend/tailscale/TSControlConn.{h,cpp}` — the encrypted record
   layer over the handshaked channel. Seals/opens ts2021 records
