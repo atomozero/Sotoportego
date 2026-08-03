@@ -15,6 +15,29 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 2: consolidated ControlSession + followup poll hook
+- Did: Added `src/backend/tailscale/TSControlSession.{h,cpp}` — one object that
+  owns the layered pieces (`ControlClient` → `ControlConn` → `Http2Conn`) in
+  dependency order and drives the whole flow: `Connect()` = Noise handshake →
+  record stream → HTTP/2 bootstrap (captures the early-payload JSON) → initial
+  `Register`. It keeps the HTTP/2 connection open for the Phase-3 MapRequest.
+  Extended `Register` with a `followup` argument and added
+  `ControlSession::PollAuthorized()` that re-issues the register with
+  `Followup: <authURL>` (the server long-polls until the browser login
+  completes) — the interactive authorization wait. This is exactly the API the
+  backend's worker thread will call.
+- Build: **green on-Haiku.** **LIVE test** of the single consolidated call
+  against controlplane.tailscale.com: `Connect()` returns HTTP 200 with a real
+  `AuthURL https://login.tailscale.com/a/…` and the captured early payload
+  `nodeKeyChallenge`. Same end-to-end result as the piecewise flow, now behind
+  one call.
+- Next: wire `ControlSession` into `TailscaleBackend::Connect` on a worker
+  thread (Connect returns immediately; the worker runs handshake→register and
+  posts state via `BMessenger(this)`), map states to
+  INITIALIZING/CONTROL_HANDSHAKE/AUTHENTICATING, surface the `AuthURL` in the
+  `NotifyStateChanged` detail (and open it with `be_roster`), then loop
+  `PollAuthorized` until `MachineAuthorized`. After that, Phase 3: MapRequest.
+
 ## 2026-08-03 — Phase 2 COMPLETE (core): LIVE node registration + AuthURL
 - Did: Added `src/backend/tailscale/TSRegister.{h,cpp}` — builds the JSON
   `tailcfg.RegisterRequest` (Version 144, `NodeKey: nodekey:<hex>`, minimal

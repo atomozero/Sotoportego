@@ -69,7 +69,7 @@ json_bool(const BString& doc, const char* key)
 status_t
 Register(Http2Conn& h2, const char* host, uint16 version,
 	const uint8 nodePub[32], const char* hostname, const char* authKey,
-	RegisterResult& out)
+	const char* followup, RegisterResult& out)
 {
 	out.httpStatus = 0;
 	out.machineAuthorized = false;
@@ -88,6 +88,8 @@ Register(Http2Conn& h2, const char* host, uint16 version,
 	body << "\"NodeKey\":\"nodekey:" << nodeHex << "\",";
 	if (authKey != NULL && *authKey != '\0')
 		body << "\"Auth\":{\"AuthKey\":\"" << authKey << "\"},";
+	if (followup != NULL && *followup != '\0')
+		body << "\"Followup\":\"" << followup << "\",";
 	body << "\"Hostinfo\":{";
 	body << "\"IPNVersion\":\"0.1.0\",";
 	body << "\"Hostname\":\"" << (hostname != NULL ? hostname : "haiku") << "\",";

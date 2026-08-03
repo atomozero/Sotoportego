@@ -35,6 +35,7 @@ SRCS = \
 	../backend/tailscale/TSControl.cpp \
 	../backend/tailscale/TSControlClient.cpp \
 	../backend/tailscale/TSControlConn.cpp \
+	../backend/tailscale/TSControlSession.cpp \
 	../backend/tailscale/TSHttp2.cpp \
 	../backend/tailscale/TSHpack.cpp \
 	../backend/tailscale/TSRegister.cpp \

@@ -34,12 +34,15 @@ struct RegisterResult {
 
 // Build and send a RegisterRequest for `nodePub` (our 32-byte node public key)
 // with the given hostname; if `authKey` is non-empty it is sent as a pre-auth
-// key. `host` is the :authority for the request. The Http2Conn must already be
+// key. `followup`, when non-empty, is the AuthURL from a prior response: the
+// server then long-polls the request until the user completes login (or it
+// times out), which is how a client waits for interactive authorization.
+// `host` is the :authority for the request. The Http2Conn must already be
 // bootstrapped. Fills `out`. Returns B_OK if a response was received and parsed
 // (even one carrying a server Error), or a transport error otherwise.
 status_t Register(Http2Conn& h2, const char* host, uint16 version,
 			const uint8 nodePub[32], const char* hostname, const char* authKey,
-			RegisterResult& out);
+			const char* followup, RegisterResult& out);
 
 }	// namespace ts
 
