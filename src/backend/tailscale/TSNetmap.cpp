@@ -62,6 +62,9 @@ TSNetmap::Parse(const char* json, size_t len)
 {
 	fSelfAddresses.clear();
 	fPeers.clear();
+	fDerpRegions.clear();
+	fDns.resolvers.clear();
+	fDns.domains.clear();
 
 	JsonValue root;
 	if (!JsonParser::Parse(json, len, root) || !root.IsObject())
@@ -119,7 +122,86 @@ TSNetmap::Parse(const char* json, size_t len)
 		}
 	}
 
+	// DERPMap.Regions is a map keyed by region-id strings; each value is a
+	// region with a Nodes array of relay servers.
+	const JsonValue* derpMap = root.Find("DERPMap");
+	if (derpMap != NULL && derpMap->IsObject()) {
+		const JsonValue* regions = derpMap->Find("Regions");
+		if (regions != NULL && regions->IsObject()) {
+			for (size_t i = 0; i < regions->objectValue.size(); i++) {
+				const JsonValue& rj = regions->objectValue[i].second;
+				if (!rj.IsObject())
+					continue;
+				DerpRegion region;
+				// Region id: prefer the RegionID field, fall back to the map key.
+				int keyId = atoi(regions->objectValue[i].first.String());
+				const JsonValue* rid = rj.Find("RegionID");
+				region.regionID = (rid != NULL)
+					? (int)rid->AsNumber(keyId) : keyId;
+				const JsonValue* code = rj.Find("RegionCode");
+				if (code != NULL && code->IsString())
+					region.regionCode = code->stringValue;
+
+				const JsonValue* nodes = rj.Find("Nodes");
+				if (nodes != NULL && nodes->IsArray()) {
+					for (size_t n = 0; n < nodes->arrayValue.size(); n++) {
+						const JsonValue& nj = nodes->arrayValue[n];
+						if (!nj.IsObject())
+							continue;
+						DerpNode node;
+						const JsonValue* hn = nj.Find("HostName");
+						if (hn != NULL && hn->IsString())
+							node.hostName = hn->stringValue;
+						const JsonValue* v4 = nj.Find("IPv4");
+						if (v4 != NULL && v4->IsString())
+							node.ipv4 = v4->stringValue;
+						const JsonValue* v6 = nj.Find("IPv6");
+						if (v6 != NULL && v6->IsString())
+							node.ipv6 = v6->stringValue;
+						const JsonValue* port = nj.Find("DERPPort");
+						if (port != NULL)
+							node.derpPort = (int)port->AsNumber(0);
+						region.nodes.push_back(node);
+					}
+				}
+				fDerpRegions.push_back(region);
+			}
+		}
+	}
+
+	// DNSConfig: modern control sends Resolvers ([{Addr}]) + Domains; older
+	// snapshots use Nameservers ([addr strings]). Accept both.
+	const JsonValue* dns = root.Find("DNSConfig");
+	if (dns != NULL && dns->IsObject()) {
+		const JsonValue* resolvers = dns->Find("Resolvers");
+		if (resolvers != NULL && resolvers->IsArray()) {
+			for (size_t i = 0; i < resolvers->arrayValue.size(); i++) {
+				const JsonValue& r = resolvers->arrayValue[i];
+				const JsonValue* addr = r.Find("Addr");
+				if (addr != NULL && addr->IsString())
+					fDns.resolvers.push_back(BString(addr->stringValue));
+			}
+		}
+		const JsonValue* ns = dns->Find("Nameservers");
+		if (ns != NULL)
+			_CollectStrings(ns, fDns.resolvers);
+		const JsonValue* domains = dns->Find("Domains");
+		if (domains != NULL)
+			_CollectStrings(domains, fDns.domains);
+	}
+
 	return true;
+}
+
+
+const DerpRegion*
+TSNetmap::DerpRegionById(int id) const
+{
+	for (size_t i = 0; i < fDerpRegions.size(); i++) {
+		if (fDerpRegions[i].regionID == id)
+			return &fDerpRegions[i];
+	}
+	return NULL;
 }
 
 

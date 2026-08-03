@@ -85,13 +85,14 @@ Goal: authenticate to a control server and hold an authorized session.
 ## Phase 3 — Network map + WireGuard peer engine
 Goal: turn a `MapResponse` into live WireGuard peer state.
 
-- [~] `MapRequest` long-poll; parse `MapResponse` into `TSNetmap`
+- [x] `MapRequest` long-poll; parse `MapResponse` into `TSNetmap`
       (nodes, keys, endpoints, DERP-home, AllowedIPs, DNS, DERPMap).
       *(Done: `TSMap` (request + 4-byte-LE stream de-framer, transport verified
-      live), `TSJson` (recursive JSON DOM parser) and `TSNetmap` (self addresses +
-      per-peer key/disco/endpoints/DERP/AllowedIPs/name), unit-verified against a
-      synthetic MapResponse fixture. Remaining: DNSConfig + full DERPMap parsing,
-      and live validation against an authorized node / Headscale.)*
+      live), `TSJson` (recursive JSON DOM parser) and `TSNetmap` — self addresses,
+      per-peer key/disco/endpoints/DERP/AllowedIPs/name, the full DERPMap
+      (regions → relay nodes host/ip/port) and DNSConfig (resolvers + domains) —
+      all unit-verified against synthetic MapResponse fixtures. Live validation
+      of real peer data still needs an authorized node / Headscale.)*
 - [ ] Refactor `WireGuardBackend`'s transport core into a reusable per-peer
       `WGPeer` (handshake/transport/rekey/anti-replay), shared by both backends.
 - [ ] Assign our `100.x` Tailscale IP to `tun/N`; program peers from the netmap.

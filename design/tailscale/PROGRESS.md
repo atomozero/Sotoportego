@@ -15,6 +15,24 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 3: DERPMap + DNSConfig parsing (netmap parse complete)
+- Did: Extended `TSNetmap` to parse the `DERPMap` (its `Regions` map keyed by
+  region-id strings → each region's code + `Nodes` array of relay servers with
+  HostName/IPv4/IPv6/DERPPort) and the `DNSConfig` (modern `Resolvers:[{Addr}]`
+  and legacy `Nameservers:[…]`, plus `Domains`). Added `DerpNode`/`DerpRegion`/
+  `DnsConfig` structs, `DerpRegions()`, `Dns()` and a `DerpRegionById()` lookup
+  so a peer's home-region relay host can be resolved for DERP fallback.
+- Build: **green on-Haiku.** Unit test against an extended fixture: two DERP
+  regions (nyc with two relay nodes, sfo with one) with correct
+  hostnames/IPv4/port, and DNS resolver `100.100.100.100` + domain
+  `tail9f3c.ts.net`. The netmap parser now covers everything the data plane and
+  MagicDNS need.
+- Next: the data-plane bridge. Factor `WireGuardBackend`'s transport core into a
+  reusable per-peer `WGPeer` (Noise IK handshake + type-4 transport + rekey +
+  RFC 6479 anti-replay), so the Tailscale backend can run N peers keyed by node
+  key, each with a send path chosen by magicsock (direct `sockaddr` or via DERP)
+  instead of a single fixed endpoint. Assign `TSNetmap::SelfIPv4()` to a tun slot.
+
 ## 2026-08-03 — Phase 3: netmap parser (TSJson + TSNetmap)
 - Did: Added `src/backend/tailscale/TSJson.{h,cpp}` — a small recursive-descent
   JSON DOM parser (objects, arrays, strings with the standard escapes + \uXXXX
