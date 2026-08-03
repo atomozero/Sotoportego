@@ -25,6 +25,7 @@
 #include "OpenVPNBackend.h"
 #include "VPNGateFetcher.h"
 #include "WireGuardBackend.h"
+#include "tailscale/TailscaleBackend.h"
 #include "VPNProfile.h"
 #include "VPNProtocol.h"
 #include "VPNStats.h"
@@ -83,6 +84,7 @@ SotoportegoServer::SotoportegoServer()
 	fBackend(NULL),
 	fOpenVPN(NULL),
 	fWireGuard(NULL),
+	fTailscale(NULL),
 	fProfiles(),
 	fLastState(VPN_STATE_DISCONNECTED),
 	fLastServerSummary(),
@@ -132,6 +134,10 @@ SotoportegoServer::ReadyToRun()
 	AddHandler(fWireGuard);
 	fWireGuard->SetObserver(BMessenger(this));
 
+	fTailscale = new TailscaleBackend();
+	AddHandler(fTailscale);
+	fTailscale->SetObserver(BMessenger(this));
+
 	// Default active backend until a profile selects one, so GetStatus before
 	// any connect returns a sane Disconnected snapshot.
 	fBackend = fOpenVPN;
@@ -142,6 +148,7 @@ SotoportegoServer::ReadyToRun()
 	// so they're online again before they have to look up what we did.
 	fOpenVPN->RecoverIfCrashed();
 	fWireGuard->RecoverIfCrashed();
+	fTailscale->RecoverIfCrashed();
 
 	// Kick off the first "where are we without a VPN?" lookup. The answer
 	// lands later as kMsgHomeGeoResult and is folded into every subsequent
@@ -230,8 +237,17 @@ SotoportegoServer::MessageReceived(BMessage* message)
 void
 SotoportegoServer::_SelectBackend(VPNBackendType backendType)
 {
-	fBackend = (backendType == VPN_BACKEND_WIREGUARD && fWireGuard != NULL)
-		? fWireGuard : fOpenVPN;
+	switch (backendType) {
+		case VPN_BACKEND_WIREGUARD:
+			fBackend = fWireGuard != NULL ? fWireGuard : fOpenVPN;
+			break;
+		case VPN_BACKEND_TAILSCALE:
+			fBackend = fTailscale != NULL ? fTailscale : fOpenVPN;
+			break;
+		default:
+			fBackend = fOpenVPN;
+			break;
+	}
 }
 
 

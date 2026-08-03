@@ -15,6 +15,28 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 0: backend seam scaffolded
+- Did: Wired `TailscaleBackend` into the daemon end to end. Added
+  `VPN_BACKEND_TAILSCALE = 3` (`src/common/VPNProfile.h`; archive/unarchive is
+  already backend-generic). New `src/backend/tailscale/TailscaleBackend.{h,cpp}`
+  — a `VPNBackend` subclass whose `Connect()` cleanly reports
+  `B_NOT_SUPPORTED` + an ERROR state for now, with `Disconnect/State/Stats/
+  BackendName/LocalIP/RemoteIP/RecoverIfCrashed` stubs. Registered it in
+  `SotoportegoServer` (ctor init, `ReadyToRun` construct+observe+recover) and
+  taught `_SelectBackend()` a switch that routes `VPN_BACKEND_TAILSCALE` to it.
+  GUI backend label switch (`MainWindow.cpp`) now shows "Tailscale". Server
+  `Makefile` compiles the new source and adds the include path; CLI/GUI need
+  only the enum.
+- Build: **not run** — the project builds on Haiku only and this sandbox is not
+  Haiku, so `make` can't be invoked. Did a self-review for consistency: the new
+  class matches the `VPNBackend`/`WireGuardBackend` patterns, the looper owns
+  the handler (no manual delete), and all backend-type switch sites (server
+  `_SelectBackend`, GUI label) are updated. Needs an on-Haiku `make` to confirm.
+- Next: create `src/common/TSConfig.*` (control URL, optional pre-auth key, and
+  the persisted-identity paths under
+  `~/config/settings/Sotoportego/tailscale/`), finishing Phase 0, then start
+  Phase 1 key generation/persistence.
+
 ## 2026-08-03 — Phase 0 kickoff: design, roadmap & scaffolding plan
 - Did: Created the `Tailscale` branch and the `design/tailscale/` set — `DESIGN.md`
   (full level-C architecture, module map, crypto inventory, lifecycle, threading),

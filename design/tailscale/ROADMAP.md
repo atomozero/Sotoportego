@@ -12,16 +12,19 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done
 ## Phase 0 — Foundations & scaffolding
 Goal: the seam exists and compiles; no behavior yet.
 
-- [ ] Add `VPN_BACKEND_TAILSCALE = 3` to `VPNProfile.h`; teach `VPNProfile`
-      archive/unarchive and the GUI label switch about it.
-- [ ] Create `src/backend/tailscale/` and a stub `TailscaleBackend` implementing
+- [x] Add `VPN_BACKEND_TAILSCALE = 3` to `VPNProfile.h`; teach `VPNProfile`
+      archive/unarchive and the GUI label switch about it. (Archive/unarchive is
+      already backend-generic via `AddInt32`; GUI label switch updated.)
+- [x] Create `src/backend/tailscale/` and a stub `TailscaleBackend` implementing
       `VPNBackend` (returns `B_NOT_SUPPORTED` from `Connect` for now).
-- [ ] Register `fTailscale` in `SotoportegoServer` + `_SelectBackend()`.
+- [x] Register `fTailscale` in `SotoportegoServer` + `_SelectBackend()` (+ ctor
+      init, `ReadyToRun` construct/observe, `RecoverIfCrashed`).
 - [ ] `src/common/TSConfig.*`: control URL, optional auth key, persisted-identity
       paths under `~/config/settings/Sotoportego/tailscale/`.
-- [ ] Makefiles updated; whole tree still builds (`make`).
+- [x] Makefiles updated (server SRCS + include path); CLI/GUI need only the enum.
 - **Done when:** `make` is green and selecting a Tailscale profile reaches the
-      new backend (which cleanly reports "not implemented").
+      new backend (which cleanly reports "not implemented"). *(Wiring complete;
+      `make` unverifiable off-Haiku — see PROGRESS.)*
 
 ## Phase 1 — Identity & key management
 Goal: stable machine/node/disco identity across restarts.

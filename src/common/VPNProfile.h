@@ -12,12 +12,17 @@
 class BMessage;
 
 
-// Identifies which pluggable backend a profile is meant for. Only OpenVPN is
-// implemented this milestone; the others are placeholders for the seam.
+// Identifies which pluggable backend a profile is meant for. OpenVPN and
+// WireGuard are implemented; Tailscale is being built from scratch in-process
+// (see design/tailscale/), IPSec is still a placeholder for the seam. The
+// values are part of the on-the-wire IPC protocol (carried as an int32 in
+// BMessages) and are persisted in the profile store, so DO NOT renumber them;
+// only append new backends at the end.
 enum VPNBackendType {
 	VPN_BACKEND_OPENVPN		= 0,
 	VPN_BACKEND_WIREGUARD	= 1,
-	VPN_BACKEND_IPSEC		= 2
+	VPN_BACKEND_IPSEC		= 2,
+	VPN_BACKEND_TAILSCALE	= 3
 };
 
 

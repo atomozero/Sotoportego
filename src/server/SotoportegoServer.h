@@ -41,7 +41,8 @@ public:
 private:
 			void				_HandleConnect(BMessage* message);
 			void				_HandleDisconnect(BMessage* message);
-	// Point fBackend at the instance for `backendType` (OpenVPN or WireGuard).
+	// Point fBackend at the instance for `backendType` (OpenVPN, WireGuard or
+	// Tailscale); unknown types fall back to OpenVPN.
 			void				_SelectBackend(VPNBackendType backendType);
 			void				_HandleSubscribe(BMessage* message);
 			void				_HandleUnsubscribe(BMessage* message);
@@ -127,6 +128,7 @@ private:
 			VPNBackend*				fBackend;
 			VPNBackend*				fOpenVPN;
 			VPNBackend*				fWireGuard;
+			VPNBackend*				fTailscale;
 			ProfileStore			fProfiles;
 			std::vector<BMessenger>	fClients;
 

@@ -29,6 +29,7 @@ SRCS = \
 	../backend/TunDevice.cpp \
 	../backend/WireGuardBackend.cpp \
 	../backend/WireGuardCrypto.cpp \
+	../backend/tailscale/TailscaleBackend.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/WireGuardConfigParser.cpp \
 	../common/WireGuardRoutes.cpp \
@@ -56,7 +57,7 @@ LIBPATHS =
 SYSTEM_INCLUDE_PATHS =
 
 # Additional paths to look for local headers.
-LOCAL_INCLUDE_PATHS = ../common ../backend
+LOCAL_INCLUDE_PATHS = ../common ../backend ../backend/tailscale
 
 # Level of optimization: none, some, full.
 OPTIMIZE := some
