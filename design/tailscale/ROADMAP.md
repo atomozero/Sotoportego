@@ -19,12 +19,12 @@ Goal: the seam exists and compiles; no behavior yet.
       `VPNBackend` (returns `B_NOT_SUPPORTED` from `Connect` for now).
 - [x] Register `fTailscale` in `SotoportegoServer` + `_SelectBackend()` (+ ctor
       init, `ReadyToRun` construct/observe, `RecoverIfCrashed`).
-- [ ] `src/common/TSConfig.*`: control URL, optional auth key, persisted-identity
+- [x] `src/common/TSConfig.*`: control URL, optional auth key, persisted-identity
       paths under `~/config/settings/Sotoportego/tailscale/`.
 - [x] Makefiles updated (server SRCS + include path); CLI/GUI need only the enum.
 - **Done when:** `make` is green and selecting a Tailscale profile reaches the
-      new backend (which cleanly reports "not implemented"). *(Wiring complete;
-      `make` unverifiable off-Haiku — see PROGRESS.)*
+      new backend (which cleanly reports "not implemented"). *(Done: `make` is
+      green on-Haiku with TSConfig compiled into the daemon.)*
 
 ## Phase 1 — Identity & key management
 Goal: stable machine/node/disco identity across restarts.

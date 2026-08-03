@@ -15,6 +15,27 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 0 complete: TSConfig + on-Haiku build verified
+- Did: Added `src/common/TSConfig.{h,cpp}` — the per-profile Tailscale config and
+  identity layout. It owns the non-secret control-URL setting (default
+  `https://controlplane.tailscale.com`, trailing slash normalised so
+  `<url>/ts2021` always composes), an optional *transient* pre-auth key that is
+  deliberately never persisted (secret → keystore in Phase 1), and the on-disk
+  layout under `~/config/settings/Sotoportego/tailscale/<profile>/` with a
+  `_SanitizeComponent` that folds a user-chosen profile name to a single safe
+  path component (keeps `[A-Za-z0-9._-]`, strips leading dots) so it can't escape
+  the base dir. Load/Save round-trip the config as a flattened BMessage with the
+  same atomic temp-file+rename dance as `ProfileStore`. Wired `TSConfig.cpp` into
+  the server `Makefile` SRCS.
+- Build: **green on-Haiku.** `make -C src/server` compiles TSConfig and links the
+  daemon cleanly (this session runs on a real Haiku box — the earlier
+  "unverifiable off-Haiku" caveat no longer applies; builds are now verified each
+  iteration). No warnings from the new file under `WARNINGS = all`.
+- Next: Phase 1 — `TSIdentity` (machine/node/disco Curve25519 keypairs). Generate
+  via the existing `wg::DhGenerate`/`DhPublic` (OpenSSL X25519), persist public
+  halves under the identity dir and private halves in `BKeyStore`, load-or-create
+  on `Connect`. Done when two launches reuse the same machine key.
+
 ## 2026-08-03 — Phase 0: backend seam scaffolded
 - Did: Wired `TailscaleBackend` into the daemon end to end. Added
   `VPN_BACKEND_TAILSCALE = 3` (`src/common/VPNProfile.h`; archive/unarchive is
