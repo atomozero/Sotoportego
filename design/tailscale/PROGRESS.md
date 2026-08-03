@@ -15,6 +15,32 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 2 MILESTONE: live ts2021 Noise handshake works
+- Did: Added `src/backend/tailscale/TSControlClient.{h,cpp}` — the piece that
+  ties TLS + framing + Noise into a real control-channel handshake. Pulled the
+  HTTP-Upgrade details from Tailscale's control/controlhttp: `POST /ts2021` with
+  `Upgrade: tailscale-control-protocol`, `Connection: upgrade`, and the framed
+  Noise initiation base64-std in the `X-Tailscale-Handshake` header; the server
+  answers `101 Switching Protocols` then writes the framed Noise response on the
+  raw connection. `ControlClient::Handshake` fetches `/key`, builds msg1 with the
+  version prologue, frames + base64s it, sends the upgrade POST, parses the 101 +
+  the 51-byte response record, and runs `NoiseIK::ReadMessage2` — a verifying
+  decrypt there proves the whole handshake matched. Added a std base64 encoder.
+- Build: **green on-Haiku.** **LIVE TEST PASSED against
+  controlplane.tailscale.com**: a fresh machine keypair completes the full Noise
+  IK handshake — control key `7d2792f9…`, transport keys derived (tx `d3011bdb…`,
+  rx `5729d65c…`). The server's response record decrypted and authenticated, so
+  protocol **version 144**, the ts2021 framing, the "Tailscale Control Protocol
+  v144" prologue, and the entire `TSNoise` implementation are confirmed
+  interoperable with the production Tailscale coordination server. This retires
+  the project's single biggest interop risk.
+- Next: the post-handshake record stream + registration. Wrap the transport keys
+  in a `Conn` that encrypts/decrypts ts2021 record frames (type 4, ChaCha20-
+  Poly1305 with per-direction counters), then send the first control message
+  `RegisterRequest` (JSON `tailcfg`) with the node key; on a response carrying an
+  `AuthURL`, surface it to the daemon → GUI for the browser login, and poll to
+  authorized (or use a pre-auth key). Headscale as the first registration target.
+
 ## 2026-08-03 — Phase 2: ts2021 framing + control-key parse (spec-exact)
 - Did: Pulled the authoritative ts2021 wire format straight from the Tailscale
   source (control/controlbase `messages.go`/`handshake.go`, control/controlhttp,

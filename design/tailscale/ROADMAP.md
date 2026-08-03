@@ -49,15 +49,16 @@ Goal: authenticate to a control server and hold an authorized session.
       keys + handshake hash, payloads round-trip, tampering rejected. The
       ts2021-specific outer framing (msg-type/version headers) is added with the
       transport, next.)*
-- [~] OpenSSL TLS client wrapper; HTTP transport to `<control>/ts2021`.
-      *(`TSTls` TLS client + `HttpsGet` done and verified end-to-end: a
-      cert-verified TLS GET of `controlplane.tailscale.com/key` returns HTTP 200
-      and the control server's `mkey:` Noise public key. Linked libssl. `TSControl`
-      adds the exact ts2021 framing (5-byte initiation / 3-byte record headers,
-      per tailscale/control/controlbase) + the "Tailscale Control Protocol v144"
-      prologue + `/key` JSON→`mkey` parsing, all unit-verified (framing bytes
-      `00 90 01 00 60`; live control key parsed to `7d2792f9…`). Remaining: the
-      `/ts2021` HTTP-Upgrade dance + running the live Noise handshake over TLS.)*
+- [x] OpenSSL TLS client wrapper; HTTP transport to `<control>/ts2021`.
+      *(DONE + verified LIVE. `TSTls` (TLS client) + `TSControl` (framing) +
+      `TSControlClient` (the HTTP-Upgrade POST `/ts2021` with the base64
+      `X-Tailscale-Handshake` header, reading 101 + the framed Noise reply).
+      A full Noise IK handshake **completes against the real
+      controlplane.tailscale.com**: the server's response record decrypts and
+      verifies, deriving the tx/rx transport keys. This empirically confirms
+      protocol version 144, the framing bytes, the version prologue and the
+      whole `TSNoise` core are interoperable with the production Tailscale
+      coordination server.)*
 - [ ] `RegisterRequest`/`RegisterResponse`; surface `AuthURL` to the daemon →
       GUI opens the browser; poll to authorized. Support a pre-auth key path.
 - **Done when:** against a local **Headscale**, the node registers and shows up
