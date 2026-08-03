@@ -11,6 +11,8 @@
 #include "VPNBackend.h"
 #include "VPNStats.h"
 
+#include "TSIdentity.h"
+
 
 // Tailscale backend -- full, in-process Tailscale ("level C"), built from
 // scratch the same way WireGuardBackend was (Haiku has no packaged tailscaled).
@@ -52,6 +54,11 @@ private:
 			VPNStats			fStats;
 			BString				fLocalIP;	// our 100.x tailnet address
 			BString				fRemoteIP;	// control/DERP endpoint summary
+
+			// Persistent machine/node/disco keypairs, loaded-or-created on the
+			// first Connect and reused across the session (and across restarts,
+			// via the keystore). See TSIdentity.
+			ts::TSIdentity		fIdentity;
 };
 
 

@@ -29,11 +29,16 @@ Goal: the seam exists and compiles; no behavior yet.
 ## Phase 1 — Identity & key management
 Goal: stable machine/node/disco identity across restarts.
 
-- [ ] Generate & persist machine, node, disco Curve25519 keypairs.
-- [ ] Store private keys in the Haiku keystore (`BKeyStore`), never plaintext.
-- [ ] Load-or-create on `Connect`; expose public keys.
+- [x] Generate & persist machine, node, disco Curve25519 keypairs.
+- [x] Store private keys in the Haiku keystore (`BKeyStore`), never plaintext.
+- [x] Load-or-create on `Connect`; expose public keys.
 - **Done when:** two consecutive launches reuse the same machine key
-      (unit-checkable without a network).
+      (unit-checkable without a network). *(Impl done in `TSIdentity`; keystore
+      round-trip re-derives the same public key. Pure hex+X25519 path
+      unit-verified on-Haiku; the two-launch keystore check is interactive —
+      first keystore access may prompt to unlock the keyring — so verify from
+      the GUI: connect a Tailscale profile twice, the log prints
+      `generated` then `reused` with the same node key.)*
 
 ## Phase 2 — Control channel (`ts2021`) + registration
 Goal: authenticate to a control server and hold an authorized session.

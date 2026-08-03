@@ -15,6 +15,34 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 1: node identity (machine/node/disco keys)
+- Did: Added `src/backend/tailscale/TSIdentity.{h,cpp}` — the node's persistent
+  identity. Three Curve25519 keypairs (machine / node / disco) generated with the
+  existing `wg::DhGenerate` (OpenSSL X25519), reusing the WireGuard backend's
+  crypto rather than adding a dependency. Private halves are hex-encoded (so the
+  NUL-containing 32 raw bytes survive the string-oriented API) and stored in the
+  Haiku keystore via `BPasswordKey`/`BKeyStore`, keyed by
+  `sotoportego.tailscale.<profile>.<role>`; public halves are re-derived from the
+  private key on every load (via `wg::DhPublic`) and also cached to
+  `<identity-dir>/identity` for inspection. `LoadOrCreate(profile)` is idempotent:
+  first run mints + stores all three, later runs (and restarts) reload the same
+  keys; a corrupt/short keystore entry surfaces `B_BAD_DATA` instead of silently
+  re-minting. Added `ToHex`/`FromHex` helpers (reused later for wire formatting).
+  Wired into `TailscaleBackend::Connect`: it now establishes identity first and
+  logs the public node key (`generated` vs `reused`) before reporting that the
+  control channel is still unimplemented. `TSIdentity.cpp` added to the server
+  Makefile.
+- Build: **green on-Haiku.** Also ran a standalone unit check (linked against the
+  compiled `TSIdentity.o`/`WireGuardCrypto.o`, no keystore touched): hex
+  round-trip, malformed-hex rejection, and X25519 public-from-private determinism
+  all pass — `DhPublic(priv)` reproduces the generation-time public key, which is
+  the property cross-launch persistence depends on.
+- Next: Phase 2 — control channel. Start with `TSNoise`: the ts2021 Noise IK
+  handshake over a byte stream, generalizing `WireGuardCrypto`'s Noise helpers.
+  Then an OpenSSL TLS client wrapper and the HTTP transport to `<control>/ts2021`,
+  then `RegisterRequest`/`RegisterResponse` with `AuthURL` surfacing. Target a
+  local Headscale first.
+
 ## 2026-08-03 — Phase 0 complete: TSConfig + on-Haiku build verified
 - Did: Added `src/common/TSConfig.{h,cpp}` — the per-profile Tailscale config and
   identity layout. It owns the non-secret control-URL setting (default
