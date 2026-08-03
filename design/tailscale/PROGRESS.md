@@ -15,6 +15,34 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 2: ts2021 framing + control-key parse (spec-exact)
+- Did: Pulled the authoritative ts2021 wire format straight from the Tailscale
+  source (control/controlbase `messages.go`/`handshake.go`, control/controlhttp,
+  tailcfg) rather than guessing, and added `src/backend/tailscale/TSControl.{h,cpp}`
+  encoding it exactly:
+  * initiation = 5-byte header `[version BE16][type=1][len BE16=96]` + the 96-byte
+    Noise msg1; response/record = 3-byte header `[type][len BE16]` + payload
+    (48-byte Noise msg2 for the handshake response);
+  * the Noise prologue `"Tailscale Control Protocol v<version>"` (mixed into the
+    transcript on both sides), default version 144 = `tailcfg.CurrentCapability
+    Version` — the server echoes whatever the client advertises, so any supported
+    version interoperates; the exact value is validated live next;
+  * `ParseControlKey` extracting the `"publicKey":"mkey:<64hex>"` from `/key`.
+  Cross-checked the design against the real handshake: protocol name
+  `Noise_IK_25519_ChaChaPoly_BLAKE2s`, `h=ck=BLAKE2s(name)`, MixHash(prologue)
+  then MixHash(control static), then `e, es, s(enc machine key), ss`, then
+  `Split() -> c1=tx, c2=rx` — all identical to the `TSNoise` core already built,
+  and the 96/48-byte Noise message sizes line up with `kNoiseMsg1/2Overhead`.
+- Build: **green on-Haiku.** Unit test: initiation header serialises to
+  `00 90 01 00 60` (version 144, type 1, len 96); record header decodes
+  type/len; prologue string exact; and against the *live* `/key` endpoint,
+  `ParseControlKey` recovers the control mkey `7d2792f9…` (matches curl).
+- Next: the `/ts2021` HTTP-Upgrade handshake — send the framed initiation, read
+  the 51-byte response frame, drive `NoiseIK` over the `TSTls` stream to a
+  completed control channel (empirically confirm version 144 against the live
+  server: a verifying `ReadMessage2` proves the prologue/version matched). Then
+  the first in-channel `RegisterRequest` and surfacing the `AuthURL`.
+
 ## 2026-08-03 — Phase 2: TLS client + control /key fetch (verified end-to-end)
 - Did: Added `src/backend/tailscale/TSTls.{h,cpp}` — a blocking OpenSSL TLS
   client over a Haiku BSD socket (`TlsClient`) plus a one-shot `HttpsGet` helper.

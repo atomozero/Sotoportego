@@ -52,8 +52,12 @@ Goal: authenticate to a control server and hold an authorized session.
 - [~] OpenSSL TLS client wrapper; HTTP transport to `<control>/ts2021`.
       *(`TSTls` TLS client + `HttpsGet` done and verified end-to-end: a
       cert-verified TLS GET of `controlplane.tailscale.com/key` returns HTTP 200
-      and the control server's `mkey:` Noise public key. Linked libssl. The
-      `POST /ts2021` framed-Noise transport is the remaining part.)*
+      and the control server's `mkey:` Noise public key. Linked libssl. `TSControl`
+      adds the exact ts2021 framing (5-byte initiation / 3-byte record headers,
+      per tailscale/control/controlbase) + the "Tailscale Control Protocol v144"
+      prologue + `/key` JSON→`mkey` parsing, all unit-verified (framing bytes
+      `00 90 01 00 60`; live control key parsed to `7d2792f9…`). Remaining: the
+      `/ts2021` HTTP-Upgrade dance + running the live Noise handshake over TLS.)*
 - [ ] `RegisterRequest`/`RegisterResponse`; surface `AuthURL` to the daemon →
       GUI opens the browser; poll to authorized. Support a pre-auth key path.
 - **Done when:** against a local **Headscale**, the node registers and shows up
