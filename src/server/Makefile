@@ -40,6 +40,8 @@ SRCS = \
 	../backend/tailscale/TSHpack.cpp \
 	../backend/tailscale/TSRegister.cpp \
 	../backend/tailscale/TSMap.cpp \
+	../backend/tailscale/TSJson.cpp \
+	../backend/tailscale/TSNetmap.cpp \
 	../backend/tailscale/TSTls.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/WireGuardConfigParser.cpp \

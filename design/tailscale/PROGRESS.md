@@ -15,6 +15,26 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 3: netmap parser (TSJson + TSNetmap)
+- Did: Added `src/backend/tailscale/TSJson.{h,cpp}` — a small recursive-descent
+  JSON DOM parser (objects, arrays, strings with the standard escapes + \uXXXX
+  incl. surrogate pairs → UTF-8, numbers, bools, null), since a MapResponse is
+  too deeply nested for flat string scanning. Added `TSNetmap.{h,cpp}` which walks
+  that tree to extract the data-plane essentials: our own tailnet addresses
+  (`Node.Addresses`, with `SelfIPv4()` for the tun) and each peer's node key,
+  disco key, AllowedIPs, direct-path Endpoints, home DERP region (decoding
+  Tailscale's `127.3.3.40:<region>` form), online flag and hostname.
+- Build: **green on-Haiku.** Unit test against a synthetic MapResponse fixture:
+  self `100.64.1.5` (+ IPv6), two peers with correct keys, DERP regions (2, 10),
+  AllowedIPs, endpoints and online flags — and a `à`-escaped hostname
+  correctly decoded to UTF-8 (`peer-làptop`), exercising nested objects/arrays,
+  escapes and unicode.
+- Next: extend the parser for `DNSConfig` (Nameservers/Domains) and the full
+  `DERPMap` (region → nodes → host:port), then start the data-plane bridge:
+  factor `WireGuardBackend`'s transport core into a reusable per-peer `WGPeer`
+  (handshake/transport/rekey/anti-replay) so the Tailscale backend can run N
+  peers from the netmap, and assign `SelfIPv4()` to a tun slot.
+
 ## 2026-08-03 — Phase 3: MapRequest + streamed response de-framer
 - Did: Added `src/backend/tailscale/TSMap.{h,cpp}` — `MapStream`, which builds the
   JSON `MapRequest` (Version, NodeKey, `Stream:true`, `OmitPeers:false`, empty
