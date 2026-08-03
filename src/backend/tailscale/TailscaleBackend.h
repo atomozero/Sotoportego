@@ -6,6 +6,7 @@
 #define TAILSCALE_BACKEND_H
 
 
+#include <OS.h>
 #include <String.h>
 
 #include "VPNBackend.h"
@@ -44,11 +45,21 @@ public:
 	virtual	BString				LocalIP() const;
 	virtual	BString				RemoteIP() const;
 
+	virtual	void				MessageReceived(BMessage* message);
+
 	virtual	void				RecoverIfCrashed();
 
 private:
 			void				_SetState(VPNState state,
 									const char* detail = NULL);
+
+	// Control worker: runs the ts2021 handshake + registration off the looper,
+	// posting AuthURL / authorized / failed back via BMessenger(this). It never
+	// mutates backend state directly.
+			void				_StartWorker();
+	static	int32				_WorkerEntry(void* self);
+			int32				_RunControlFlow();
+			void				_StopWorker();
 
 			VPNState			fState;
 			VPNStats			fStats;
@@ -59,6 +70,15 @@ private:
 			// first Connect and reused across the session (and across restarts,
 			// via the keystore). See TSIdentity.
 			ts::TSIdentity		fIdentity;
+
+			// Connect() snapshots what the worker needs so the thread never
+			// touches the (caller-owned) VPNProfile.
+			BString				fControlHost;
+			BString				fHostname;
+			BString				fAuthKey;
+
+			thread_id			fWorker;		// -1 when none
+			bool				fStopRequested;
 };
 
 

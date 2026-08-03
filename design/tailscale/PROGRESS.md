@@ -15,6 +15,33 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 2: TailscaleBackend drives the control flow (worker thread)
+- Did: Wired `ControlSession` into `TailscaleBackend`. `Connect()` now snapshots
+  the control host (profile `fServer`, default controlplane.tailscale.com), the
+  tailnet hostname and any auth key, loads the identity, sets CONNECTING and
+  spawns a `tailscale-control` worker (returns immediately). The worker runs
+  `ControlSession::Connect` (handshake → HTTP/2 → register) and posts private
+  messages back via `BMessenger(this)`: `kMsgTsAuthURL` → looper sets
+  AUTHENTICATING with the AuthURL as the state detail (so the GUI can show/open
+  it), then it long-polls `PollAuthorized` until authorized. `Disconnect()` sets
+  a stop flag the worker checks between polls (bounded by the 30s socket
+  timeout); the worker's final message settles the state. On authorization it
+  currently reports a clear ERROR ("Authorized. Data plane … not implemented yet
+  — Phase 3+") rather than a false CONNECTED, since the WG data plane isn't built.
+- Build: **green on-Haiku.** The control flow it drives is the same
+  `ControlSession` already proven live against controlplane.tailscale.com
+  (HTTP 200 + real AuthURL). An automated in-process backend test
+  (BLooper + observer + `Connect`) could not run to completion here: it blocks in
+  `TSIdentity::LoadOrCreate` on the Haiku keystore's keyring-unlock prompt, which
+  a headless test can't answer — an environment limit (same one flagged in
+  Phase 1), not a code fault. Full backend end-to-end (select a Tailscale profile
+  → Connect → AuthURL in the header → browser login) is verified interactively
+  from the GUI, where the keyring is unlocked.
+- Next: Phase 3 — the `MapRequest` long-poll. POST `/machine/map` over the open
+  `Http2Conn`, stream `MapResponse`s, parse `TSNetmap` (self 100.x, peers: node
+  keys, endpoints, DERP-home, AllowedIPs, DNS, DERPMap), and start assigning the
+  tun IP. Also: a small GUI touch to make the AuthURL clickable/auto-open.
+
 ## 2026-08-03 — Phase 2: consolidated ControlSession + followup poll hook
 - Did: Added `src/backend/tailscale/TSControlSession.{h,cpp}` — one object that
   owns the layered pieces (`ControlClient` → `ControlConn` → `Http2Conn`) in
