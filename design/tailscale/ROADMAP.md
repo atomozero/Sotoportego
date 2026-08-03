@@ -43,7 +43,12 @@ Goal: stable machine/node/disco identity across restarts.
 ## Phase 2 — Control channel (`ts2021`) + registration
 Goal: authenticate to a control server and hold an authorized session.
 
-- [ ] `TSNoise`: Noise IK over a byte stream, reusing `WireGuardCrypto` helpers.
+- [x] `TSNoise`: Noise IK over a byte stream, reusing `WireGuardCrypto` helpers.
+      *(Generic IK state machine — SymmetricState + HandshakeState — done and
+      unit-verified in-process: initiator↔responder derive identical transport
+      keys + handshake hash, payloads round-trip, tampering rejected. The
+      ts2021-specific outer framing (msg-type/version headers) is added with the
+      transport, next.)*
 - [ ] OpenSSL TLS client wrapper; HTTP transport to `<control>/ts2021`.
 - [ ] `RegisterRequest`/`RegisterResponse`; surface `AuthURL` to the daemon →
       GUI opens the browser; poll to authorized. Support a pre-auth key path.

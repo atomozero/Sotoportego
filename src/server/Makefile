@@ -31,6 +31,7 @@ SRCS = \
 	../backend/WireGuardCrypto.cpp \
 	../backend/tailscale/TailscaleBackend.cpp \
 	../backend/tailscale/TSIdentity.cpp \
+	../backend/tailscale/TSNoise.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/WireGuardConfigParser.cpp \
 	../common/WireGuardRoutes.cpp \

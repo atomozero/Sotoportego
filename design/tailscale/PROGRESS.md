@@ -15,6 +15,31 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 2 (start): Noise IK core for ts2021
+- Did: Added `src/backend/tailscale/TSNoise.{h,cpp}` — a generic Noise IK
+  handshake (SymmetricState + HandshakeState) for the `Noise_IK_25519_ChaChaPoly_
+  BLAKE2s` suite the ts2021 control channel uses. Built entirely on the existing
+  `WireGuardCrypto` primitives: BLAKE2s streaming hash for MixHash, `Kdf2` as the
+  2-output HKDF for MixKey/Split, `Dh` (X25519) for the DH tokens, and
+  `AeadEncrypt/Decrypt` for EncryptAndHash/DecryptAndHash. Key insight that made
+  the reuse clean: WireGuard's AEAD nonce is `0x00000000 || counter_le64`, which
+  is exactly Noise's nonce, so the Noise message counter feeds straight into the
+  WG AEAD. Implemented the full IK flow (pre-message `<- s`, message 1
+  `-> e, es, s, ss`, message 2 `<- e, ee, se`) for both initiator and responder,
+  plus `Split()` for the directional transport keys and `HandshakeHash()` for
+  channel binding. Wired into the server Makefile.
+- Build: **green on-Haiku**, no warnings. Unit test (initiator↔responder in one
+  process, linked against `TSNoise.o`+`WireGuardCrypto.o`, no network): payloads
+  round-trip both directions; both sides derive identical `sendKey`/`recvKey` and
+  the same handshake hash; the responder recovers the initiator's static key; a
+  single flipped byte in message 1 is rejected by the AEAD. All pass.
+- Next: the ts2021 transport layer around this core — (1) the outer wire framing
+  Tailscale wraps the Noise messages in (message-type byte + big-endian length,
+  and the initiation version header), (2) an OpenSSL TLS client wrapper, and
+  (3) the HTTP `POST <control>/ts2021` upgrade that carries the framed Noise
+  bytes. Fetch the control server's static key from `<control>/key` first (that
+  public key is the `remoteStaticPub` InitInitiator needs). Target Headscale.
+
 ## 2026-08-03 — Phase 1: node identity (machine/node/disco keys)
 - Did: Added `src/backend/tailscale/TSIdentity.{h,cpp}` — the node's persistent
   identity. Three Curve25519 keypairs (machine / node / disco) generated with the
