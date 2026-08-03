@@ -15,6 +15,31 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 2: encrypted record stream verified live (+ protocol recon)
+- Did: Added `src/backend/tailscale/TSControlConn.{h,cpp}` — the encrypted record
+  layer over the handshaked channel. Seals/opens ts2021 records
+  (`[type=4][cipherlen BE16][ciphertext]`, ChaCha20-Poly1305 via OpenSSL EVP, no
+  AAD, per-direction counter). Key subtlety captured from the source: the
+  transport nonce is **big-endian** (bytes 4..11), unlike the little-endian Noise
+  handshake nonce — so it needs its own AEAD, not `WireGuardCrypto`'s. Fixed a
+  desync where `ControlClient` dropped the record bytes the server bundles right
+  after the 51-byte handshake reply: it now preserves them (`Pending()`), and
+  `ControlConn::Init` drains that pushback before the socket. Added a 30s socket
+  recv timeout in `TlsClient` so long-poll reads can't hang.
+- Build: **green on-Haiku.** **LIVE verification against controlplane.tailscale.com**:
+  every record decrypts with a verifying Poly1305 tag. This also reverse-engineered
+  the exact post-handshake sequence:
+  1. an **early payload** — magic `\xff\xff\xffTS`, a BE32 length, then a JSON
+     `tailcfg.EarlyNoise`, e.g. `{"nodeKeyChallenge":"chalpub:d10b405a…"}`;
+  2. then the **HTTP/2** stream (server SETTINGS frame observed) — so the control
+     RPCs (register/map) are HTTP/2 requests over the Noise record conn.
+- Next: a minimal HTTP/2 client over `ControlConn` — connection preface + our
+  SETTINGS, HPACK-encode request headers, POST `/machine/register` with the JSON
+  `RegisterRequest` (node key, and the response to `nodeKeyChallenge`), read the
+  HEADERS/DATA response. On an `AuthURL`, surface it to the daemon → GUI for the
+  browser login; support a pre-auth key. HPACK (static table + a tiny dynamic
+  table, Huffman optional) is the main new piece.
+
 ## 2026-08-03 — Phase 2 MILESTONE: live ts2021 Noise handshake works
 - Did: Added `src/backend/tailscale/TSControlClient.{h,cpp}` — the piece that
   ties TLS + framing + Noise into a real control-channel handshake. Pulled the

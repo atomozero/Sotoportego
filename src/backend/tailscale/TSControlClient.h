@@ -54,6 +54,13 @@ public:
 			TlsClient&			Stream() { return fTls; }
 			const char*			LastError() const { return fLastError.String(); }
 
+			// Record-stream bytes the handshake reader pulled off the socket
+			// past the 51-byte Noise response (the server often bundles its
+			// first HTTP/2 records with the response). Hand these to
+			// ControlConn::Init so the first record isn't lost.
+			const uint8*		Pending() const { return fPending; }
+			size_t				PendingLen() const { return fPendingLen; }
+
 private:
 			status_t			_FetchControlKey(const char* host, uint16 port,
 									bool insecure);
@@ -63,6 +70,9 @@ private:
 			TlsClient			fTls;
 			uint8				fControlKey[32];
 			BString				fLastError;
+
+			uint8				fPending[512];
+			size_t				fPendingLen;
 };
 
 }	// namespace ts

@@ -34,6 +34,7 @@ SRCS = \
 	../backend/tailscale/TSNoise.cpp \
 	../backend/tailscale/TSControl.cpp \
 	../backend/tailscale/TSControlClient.cpp \
+	../backend/tailscale/TSControlConn.cpp \
 	../backend/tailscale/TSTls.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/WireGuardConfigParser.cpp \

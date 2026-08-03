@@ -49,9 +49,11 @@ base64_encode(const uint8* data, size_t len)
 
 ControlClient::ControlClient()
 	:
-	fLastError("")
+	fLastError(""),
+	fPendingLen(0)
 {
 	memset(fControlKey, 0, sizeof(fControlKey));
+	memset(fPending, 0, sizeof(fPending));
 }
 
 
@@ -243,6 +245,17 @@ ControlClient::Handshake(const char* host, uint16 port, bool insecure,
 		fLastError = "Noise response failed to verify (version/protocol "
 			"mismatch)";
 		return B_ERROR;
+	}
+
+	// Preserve any bytes read past the Noise response: the server usually
+	// bundles its first HTTP/2 record(s) right after the handshake reply, and
+	// those must feed the record stream, not be dropped.
+	size_t consumed = kRecordHeaderLen + payloadLen;
+	if (bodyLen > consumed) {
+		fPendingLen = bodyLen - consumed;
+		if (fPendingLen > sizeof(fPending))
+			fPendingLen = sizeof(fPending);
+		memcpy(fPending, body + consumed, fPendingLen);
 	}
 
 	if (outKeys != NULL)

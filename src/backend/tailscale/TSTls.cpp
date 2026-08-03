@@ -12,6 +12,7 @@
 
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -85,6 +86,14 @@ TlsClient::Connect(const char* host, uint16 port)
 		return B_ERROR;
 	}
 	fSocket = sock;
+
+	// A receive timeout so blocking reads (control long-poll, DERP) can never
+	// hang forever on a silently dead peer; callers treat a timeout as a
+	// recoverable read error and reconnect.
+	struct timeval tv;
+	tv.tv_sec = 30;
+	tv.tv_usec = 0;
+	setsockopt(fSocket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
 	// --- TLS handshake ------------------------------------------------------
 	SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());

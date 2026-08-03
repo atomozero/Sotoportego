@@ -59,8 +59,20 @@ Goal: authenticate to a control server and hold an authorized session.
       protocol version 144, the framing bytes, the version prologue and the
       whole `TSNoise` core are interoperable with the production Tailscale
       coordination server.)*
+- [~] Encrypted record stream over the handshaked channel — DONE + verified
+      LIVE. `ControlConn` seals/opens ts2021 record frames (type 4, ChaCha20-
+      Poly1305, BIG-endian per-direction counter nonce, no AAD, 4077-byte max).
+      Against controlplane.tailscale.com the record stream decrypts perfectly
+      (all Poly1305 tags verify); discovered the post-handshake **early payload**
+      (magic `\xff\xff\xffTS` + BE32 len + JSON `tailcfg.EarlyNoise` carrying the
+      `nodeKeyChallenge`) followed by an **HTTP/2** SETTINGS frame — so the
+      control RPCs ride HTTP/2 over the Noise records. Added a 30s socket recv
+      timeout so long-poll reads can't hang forever.
 - [ ] `RegisterRequest`/`RegisterResponse`; surface `AuthURL` to the daemon →
       GUI opens the browser; poll to authorized. Support a pre-auth key path.
+      *(Needs a minimal HTTP/2 client (SETTINGS + HPACK + HEADERS/DATA) over
+      `ControlConn` to POST `/machine/register`; consume the early-payload
+      `nodeKeyChallenge` first.)*
 - **Done when:** against a local **Headscale**, the node registers and shows up
       as authorized in `headscale nodes list`.
 
