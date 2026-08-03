@@ -15,6 +15,28 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 2: HPACK core (encoder + decoder, non-Huffman)
+- Did: Added `src/backend/tailscale/TSHpack.{h,cpp}` — HPACK (RFC 7541) header
+  compression. Full 61-entry static table; prefix-integer encode/decode; the four
+  header-field representations (indexed, literal-with-incremental-indexing,
+  literal-without/never-indexed) and dynamic-table-size updates; a dynamic table
+  with RFC size accounting (name+value+32) and eviction. The decoder maintains
+  the dynamic table across a block; the encoder stays deliberately simple (static
+  name/full-match indexing, raw literal values, no Huffman, no dynamic indexing) —
+  all optional for a sender and enough for our requests.
+- Build: **green on-Haiku.** Unit test: the RFC 7541 **C.3.1** request example
+  decodes exactly to `:method GET, :scheme http, :path /, :authority
+  www.example.com` (exercises indexed fields + literal-with-incremental-indexing
+  + a dynamic-table insert), and an encoder→decoder round-trip of a realistic
+  register header set (`:method POST`, `:path /machine/register`, `:scheme https`,
+  `:authority …`, content-type/length) reproduces every header (74 bytes encoded).
+- Next: Huffman string decoding (RFC 7541 Appendix B table) — the server
+  Huffman-codes its response header strings, so `_DecodeString` currently returns
+  B_NOT_SUPPORTED on the H bit; add the decode and validate against RFC C.4
+  (`www.example.com` ⇐ `f1e3 c2e5 f23a 6ba0 ab90 f4ff`). Then the request/response
+  helpers on `Http2Conn` (HEADERS+DATA out, HEADERS+DATA in) and the first live
+  `RegisterRequest`.
+
 ## 2026-08-03 — Phase 2: HTTP/2 framing + connection bootstrap (live)
 - Did: Added `src/backend/tailscale/TSHttp2.{h,cpp}` — a minimal HTTP/2 client
   over `ControlConn`. It (1) consumes the early payload (magic `\xff\xff\xffTS` +
