@@ -13,6 +13,7 @@
 #include <SupportDefs.h>
 
 #include "TSControlConn.h"
+#include "TSHpack.h"
 
 
 // A minimal HTTP/2 client that runs over the ts2021 encrypted record stream
@@ -70,6 +71,18 @@ public:
 			// nodeKeyChallenge). Returns B_OK once both SETTINGS are ACKed.
 			status_t			Bootstrap(BString* outEarlyJson);
 
+			// Perform one request/response exchange on a fresh stream: send
+			// HEADERS (HPACK-encoded pseudo-headers + content-type/length) and,
+			// if `bodyLen` > 0, a DATA frame, then read the response, decoding
+			// `:status` and collecting the response body. Control frames
+			// (SETTINGS/PING/WINDOW_UPDATE) that arrive meanwhile are handled.
+			// Returns B_OK once the response stream ends.
+			status_t			Request(const char* method, const char* scheme,
+									const char* authority, const char* path,
+									const char* contentType, const uint8* body,
+									size_t bodyLen, int* outStatus,
+									BString* outRespBody);
+
 			// Write one HTTP/2 frame.
 			status_t			WriteFrame(uint8 type, uint8 flags,
 									uint32 streamId, const uint8* payload,
@@ -88,6 +101,12 @@ private:
 
 			ControlConn*		fConn;
 			BString				fLastError;
+
+			// Client streams use odd IDs, incrementing per request.
+			uint32				fNextStreamId;
+			// Response HPACK decoder: its dynamic table persists for the life of
+			// the connection, across all responses.
+			HpackDecoder		fDecoder;
 
 			// Reassembly buffer: valid bytes live in [fBufOff, fBufLen).
 			uint8				fBuf[65536];

@@ -15,6 +15,30 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 2: HTTP/2 request/response works live over ts2021
+- Did: Added `Http2Conn::Request()` — a full request/response exchange on a fresh
+  client stream: HPACK-encode the pseudo-headers (`:method/:scheme/:path/
+  :authority`) + content-type/length, send HEADERS (+ DATA with END_STREAM),
+  then read the response, reassembling HEADERS/CONTINUATION fragments (stripping
+  PADDED/PRIORITY), HPACK-decoding `:status` with a connection-lifetime decoder,
+  collecting DATA into the body, replenishing stream+connection flow-control
+  windows per DATA frame, and answering SETTINGS/PING and bailing on GOAWAY/
+  RST_STREAM. Client streams use odd ids.
+- Build: **green on-Haiku.** **LIVE end-to-end against controlplane.tailscale.com**:
+  `POST /machine/register` returns a well-formed HTTP/2 response —
+  `:status 502`, 125-byte body `"backend not found …; reqType=noise-register/
+  machine-pubkey; …"`. The 502 is the load balancer's answer for an
+  unprovisioned machine key (our body was a placeholder `{}`), but it proves the
+  server parsed our HTTP/2 HEADERS+DATA (it identified the request type) and that
+  we correctly HPACK-decoded its response status and reassembled its body. The
+  whole stack — Noise handshake → encrypted records → HTTP/2 framing → HPACK
+  encode/decode → body reassembly — is validated against the production server.
+- Next: the real `RegisterRequest`. Build the JSON `tailcfg.RegisterRequest`
+  (version, node key = our node public key, machine key, Auth, Hostinfo, and the
+  answer to the early-payload `nodeKeyChallenge`), POST it, parse the
+  `RegisterResponse` (MachineAuthorized / AuthURL / NodeKeyExpired). Surface the
+  `AuthURL` to the daemon → GUI; support a pre-auth key. Then Phase 3 (map).
+
 ## 2026-08-03 — Phase 2: HPACK Huffman decode (RFC vectors pass)
 - Did: Completed HPACK with Huffman string decoding. Embedded the RFC 7541
   Appendix B table (256 code/length pairs, taken verbatim from Go's

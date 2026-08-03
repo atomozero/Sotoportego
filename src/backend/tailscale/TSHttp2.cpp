@@ -4,7 +4,11 @@
  */
 #include "TSHttp2.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include <vector>
 
 
 namespace ts {
@@ -20,6 +24,7 @@ Http2Conn::Http2Conn()
 	:
 	fConn(NULL),
 	fLastError(""),
+	fNextStreamId(1),
 	fBufOff(0),
 	fBufLen(0)
 {
@@ -30,6 +35,7 @@ void
 Http2Conn::Init(ControlConn* conn)
 {
 	fConn = conn;
+	fNextStreamId = 1;
 	fBufOff = 0;
 	fBufLen = 0;
 }
@@ -132,6 +138,154 @@ Http2Conn::ReadFrame(uint8* outType, uint8* outFlags, uint32* outStreamId,
 	if (outFlags != NULL) *outFlags = flags;
 	if (outStreamId != NULL) *outStreamId = streamId;
 	if (outLen != NULL) *outLen = len;
+	return B_OK;
+}
+
+
+status_t
+Http2Conn::Request(const char* method, const char* scheme,
+	const char* authority, const char* path, const char* contentType,
+	const uint8* body, size_t bodyLen, int* outStatus, BString* outRespBody)
+{
+	if (fConn == NULL)
+		return B_NO_INIT;
+
+	uint32 streamId = fNextStreamId;
+	fNextStreamId += 2;
+
+	// Build the HPACK header block: pseudo-headers first, then content headers.
+	std::vector<uint8> headers;
+	HpackEncoder::AddHeader(headers, ":method", method);
+	HpackEncoder::AddHeader(headers, ":scheme", scheme);
+	HpackEncoder::AddHeader(headers, ":path", path);
+	HpackEncoder::AddHeader(headers, ":authority", authority);
+	if (bodyLen > 0) {
+		if (contentType != NULL)
+			HpackEncoder::AddHeader(headers, "content-type", contentType);
+		char clen[24];
+		snprintf(clen, sizeof(clen), "%zu", bodyLen);
+		HpackEncoder::AddHeader(headers, "content-length", clen);
+	}
+
+	uint8 headersFlags = H2_FLAG_END_HEADERS
+		| (bodyLen > 0 ? 0 : H2_FLAG_END_STREAM);
+	status_t result = WriteFrame(H2_HEADERS, headersFlags, streamId,
+		headers.data(), headers.size());
+	if (result != B_OK)
+		return result;
+
+	if (bodyLen > 0) {
+		result = WriteFrame(H2_DATA, H2_FLAG_END_STREAM, streamId, body,
+			bodyLen);
+		if (result != B_OK)
+			return result;
+	}
+
+	// Read the response: accumulate header-block fragments (HEADERS +
+	// CONTINUATION) and DATA until END_STREAM on our stream.
+	std::vector<uint8> headerBlock;
+	bool headersDone = false;
+	BString respBody;
+	int status = 0;
+
+	uint8 payload[kH2MaxFramePayload];
+	for (int frames = 0; frames < 100000; frames++) {
+		uint8 type = 0, flags = 0;
+		uint32 stream = 0;
+		size_t len = 0;
+		result = ReadFrame(&type, &flags, &stream, payload, sizeof(payload),
+			&len);
+		if (result != B_OK)
+			return result;
+
+		switch (type) {
+			case H2_SETTINGS:
+				if ((flags & H2_FLAG_ACK) == 0)
+					WriteFrame(H2_SETTINGS, H2_FLAG_ACK, 0, NULL, 0);
+				break;
+			case H2_PING:
+				if ((flags & H2_FLAG_ACK) == 0)
+					WriteFrame(H2_PING, H2_FLAG_ACK, 0, payload, len);
+				break;
+			case H2_GOAWAY:
+				fLastError = "server sent GOAWAY";
+				return B_ERROR;
+			case H2_WINDOW_UPDATE:
+				break;	// we replenish our own window below
+			case H2_RST_STREAM:
+				if (stream == streamId) {
+					fLastError = "server reset the request stream";
+					return B_ERROR;
+				}
+				break;
+
+			case H2_HEADERS:
+			case H2_CONTINUATION:
+			{
+				if (stream != streamId)
+					break;
+				size_t off = 0;
+				size_t end = len;
+				if (type == H2_HEADERS) {
+					if ((flags & 0x08) != 0 && off < end)	// PADDED
+						end -= payload[off++];
+					if ((flags & 0x20) != 0)				// PRIORITY
+						off += 5;
+				}
+				if (off <= end && end <= len) {
+					headerBlock.insert(headerBlock.end(), payload + off,
+						payload + end);
+				}
+				if ((flags & H2_FLAG_END_HEADERS) != 0)
+					headersDone = true;
+				break;
+			}
+
+			case H2_DATA:
+			{
+				if (stream != streamId)
+					break;
+				size_t off = 0;
+				size_t end = len;
+				if ((flags & 0x08) != 0 && off < end)	// PADDED
+					end -= payload[off++];
+				if (end > off)
+					respBody.Append((const char*)(payload + off), end - off);
+				// Replenish flow-control windows for what we consumed.
+				if (len > 0) {
+					uint8 inc[4] = { (uint8)(len >> 24), (uint8)(len >> 16),
+						(uint8)(len >> 8), (uint8)len };
+					WriteFrame(H2_WINDOW_UPDATE, 0, streamId, inc, 4);
+					WriteFrame(H2_WINDOW_UPDATE, 0, 0, inc, 4);
+				}
+				break;
+			}
+		}
+
+		// Decode headers once the block is complete (single-shot here: the
+		// register/map responses carry all headers before any trailers).
+		if (headersDone && status == 0 && !headerBlock.empty()) {
+			std::vector<HpackHeader> hdrs;
+			if (fDecoder.Decode(headerBlock.data(), headerBlock.size(), hdrs)
+					== B_OK) {
+				for (size_t i = 0; i < hdrs.size(); i++) {
+					if (hdrs[i].name == ":status")
+						status = atoi(hdrs[i].value.String());
+				}
+			}
+			headerBlock.clear();
+		}
+
+		if ((flags & H2_FLAG_END_STREAM) != 0 && stream == streamId
+				&& (type == H2_DATA || type == H2_HEADERS)) {
+			break;
+		}
+	}
+
+	if (outStatus != NULL)
+		*outStatus = status;
+	if (outRespBody != NULL)
+		*outRespBody = respBody;
 	return B_OK;
 }
 
