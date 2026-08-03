@@ -15,6 +15,28 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 2: HPACK Huffman decode (RFC vectors pass)
+- Did: Completed HPACK with Huffman string decoding. Embedded the RFC 7541
+  Appendix B table (256 code/length pairs, taken verbatim from Go's
+  net/http2/hpack to avoid transcription error) and a prefix-free MSB-first
+  decoder: accumulate bits, emit the first symbol whose (code,length) matches
+  (safe because the codes are prefix-free), and validate trailing bits as
+  all-ones EOS padding. Wired it into `_DecodeString` so Huffman-coded literals
+  now decode instead of returning B_NOT_SUPPORTED.
+- Build: **green on-Haiku.** Unit tests pass against the official RFC 7541
+  vectors: **C.4.1** decodes the Huffman `:authority` to `www.example.com`, and
+  **C.6.1** decodes a full Huffman-coded response — `:status 302`,
+  `cache-control private`, `date Mon, 21 Oct 2013 20:13:21 GMT`,
+  `location https://www.example.com` — exercising letters, digits, spaces,
+  commas and punctuation across the alphabet. HPACK is now complete
+  (encoder + decoder + Huffman).
+- Next: request/response helpers on `Http2Conn` — send HEADERS (HPACK-encoded
+  pseudo-headers + content-type/length) + END_HEADERS, then a DATA frame with
+  the JSON body and END_STREAM; read the response HEADERS (HPACK-decode
+  `:status`) and DATA frames (handle WINDOW_UPDATE/PING, respect stream id 1).
+  Then build the JSON `RegisterRequest` and do the first live register against
+  controlplane / Headscale, surfacing the `AuthURL`.
+
 ## 2026-08-03 — Phase 2: HPACK core (encoder + decoder, non-Huffman)
 - Did: Added `src/backend/tailscale/TSHpack.{h,cpp}` — HPACK (RFC 7541) header
   compression. Full 61-entry static table; prefix-integer encode/decode; the four

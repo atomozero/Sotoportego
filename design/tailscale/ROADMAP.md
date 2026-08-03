@@ -70,9 +70,12 @@ Goal: authenticate to a control server and hold an authorized session.
       timeout so long-poll reads can't hang forever.
 - [ ] `RegisterRequest`/`RegisterResponse`; surface `AuthURL` to the daemon →
       GUI opens the browser; poll to authorized. Support a pre-auth key path.
-      *(Needs a minimal HTTP/2 client (SETTINGS + HPACK + HEADERS/DATA) over
-      `ControlConn` to POST `/machine/register`; consume the early-payload
-      `nodeKeyChallenge` first.)*
+      *(HTTP/2 transport ready: `TSHttp2` (framing + SETTINGS bootstrap, live)
+      and `TSHpack` (RFC 7541 encoder + decoder + Huffman, validated against the
+      RFC C.3/C.4/C.6 vectors). Remaining: HEADERS/DATA request+response helpers
+      on `Http2Conn`, then POST `/machine/register` with the JSON RegisterRequest
+      (answering the early-payload `nodeKeyChallenge`), read the response, surface
+      the `AuthURL`.)*
 - **Done when:** against a local **Headscale**, the node registers and shows up
       as authorized in `headscale nodes list`.
 
