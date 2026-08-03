@@ -15,6 +15,28 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 3: MapRequest + streamed response de-framer
+- Did: Added `src/backend/tailscale/TSMap.{h,cpp}` — `MapStream`, which builds the
+  JSON `MapRequest` (Version, NodeKey, `Stream:true`, `OmitPeers:false`, empty
+  Endpoints, minimal Hostinfo; Compress omitted → plain JSON), POSTs it to
+  `/machine/map` via the streaming `Http2Conn::BeginRequest`, and de-frames the
+  response with `ReadMessage`: each `MapResponse` is a 4-byte little-endian
+  length prefix + that many JSON bytes, buffered across HTTP/2 DATA frames.
+- Build: **green on-Haiku.** Live check against controlplane.tailscale.com: after
+  a fresh register (HTTP 200 + AuthURL), the `POST /machine/map` is sent and the
+  server responds with headers — **HTTP :status 404**. That's the coordination
+  LB's answer for an *unauthorized* node (no map backend until the node is logged
+  in), the same gating the unprovisioned register path shows. So the map request
+  build + HTTP/2 streaming transport are exercised end to end; a *real* netmap
+  needs an authorized node — reached either after interactive browser login or,
+  per the design's primary dev target, against a local **Headscale with a pre-auth
+  key** (non-interactive). That is the right place to validate live peer data.
+- Next: the `TSNetmap` JSON parser — a small recursive JSON reader + extraction
+  of the fields we need (self `Node.Addresses` = our 100.x, and per-peer
+  `Key`/`DiscoKey`/`Endpoints`/`DERP`/`AllowedIPs`; `DNSConfig`; `DERPMap`),
+  unit-tested against a captured/synthetic `MapResponse` fixture (no authorized
+  node required). Then wire the netmap into the backend and assign the tun IP.
+
 ## 2026-08-03 — Phase 3 (start): streaming HTTP/2 request (for the map long-poll)
 - Did: The `MapRequest` is an HTTP/2 long-poll whose response streams many
   `MapResponse` messages, so the read-to-END_STREAM `Request()` can't drive it.
