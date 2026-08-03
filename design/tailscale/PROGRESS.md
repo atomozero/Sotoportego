@@ -15,6 +15,27 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 3 (start): streaming HTTP/2 request (for the map long-poll)
+- Did: The `MapRequest` is an HTTP/2 long-poll whose response streams many
+  `MapResponse` messages, so the read-to-END_STREAM `Request()` can't drive it.
+  Split `Http2Conn` into a streaming API: `BeginRequest()` sends HEADERS(+DATA)
+  and reads up to and including the response HEADERS (decoding `:status`) without
+  consuming the body; `ReadBody()` then returns one DATA frame's payload per call
+  (stripping padding, replenishing stream+connection flow-control windows,
+  answering SETTINGS/PING, honoring END_STREAM → `*outLen == 0`). Reimplemented
+  `Request()` as `BeginRequest` + a `ReadBody` loop, so the one-shot and
+  streaming paths share code.
+- Build: **green on-Haiku.** Regression-checked live against
+  controlplane.tailscale.com: registration through the refactored `Request()`
+  still returns HTTP 200 + a real AuthURL, so `BeginRequest`/`ReadBody` are
+  correct.
+- Next: build the JSON `tailcfg.MapRequest` (Version, NodeKey, Endpoints, Stream:
+  true, Compress: "" for plain JSON, Hostinfo), `BeginRequest` POST `/machine/map`,
+  then read the response body as a sequence of 4-byte little-endian length-prefixed
+  `MapResponse` JSON messages via `ReadBody` (buffering across DATA frames), and
+  parse `TSNetmap` (self 100.x address, peers: node key, DiscoKey, Endpoints,
+  DERP-home, AllowedIPs; DNSConfig; DERPMap).
+
 ## 2026-08-03 — Phase 2: TailscaleBackend drives the control flow (worker thread)
 - Did: Wired `ControlSession` into `TailscaleBackend`. `Connect()` now snapshots
   the control host (profile `fServer`, default controlplane.tailscale.com), the

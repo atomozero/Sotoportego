@@ -25,6 +25,8 @@ Http2Conn::Http2Conn()
 	fConn(NULL),
 	fLastError(""),
 	fNextStreamId(1),
+	fReqStream(0),
+	fReqEnded(true),
 	fBufOff(0),
 	fBufLen(0)
 {
@@ -36,6 +38,8 @@ Http2Conn::Init(ControlConn* conn)
 {
 	fConn = conn;
 	fNextStreamId = 1;
+	fReqStream = 0;
+	fReqEnded = true;
 	fBufOff = 0;
 	fBufLen = 0;
 }
@@ -143,15 +147,17 @@ Http2Conn::ReadFrame(uint8* outType, uint8* outFlags, uint32* outStreamId,
 
 
 status_t
-Http2Conn::Request(const char* method, const char* scheme,
+Http2Conn::BeginRequest(const char* method, const char* scheme,
 	const char* authority, const char* path, const char* contentType,
-	const uint8* body, size_t bodyLen, int* outStatus, BString* outRespBody)
+	const uint8* body, size_t bodyLen, int* outStatus)
 {
 	if (fConn == NULL)
 		return B_NO_INIT;
 
 	uint32 streamId = fNextStreamId;
 	fNextStreamId += 2;
+	fReqStream = streamId;
+	fReqEnded = false;
 
 	// Build the HPACK header block: pseudo-headers first, then content headers.
 	std::vector<uint8> headers;
@@ -181,14 +187,12 @@ Http2Conn::Request(const char* method, const char* scheme,
 			return result;
 	}
 
-	// Read the response: accumulate header-block fragments (HEADERS +
-	// CONTINUATION) and DATA until END_STREAM on our stream.
+	// Read up to and including the response HEADERS block (decoding :status);
+	// do not consume any DATA -- that's ReadBody's job.
 	std::vector<uint8> headerBlock;
-	bool headersDone = false;
-	BString respBody;
 	int status = 0;
-
 	uint8 payload[kH2MaxFramePayload];
+
 	for (int frames = 0; frames < 100000; frames++) {
 		uint8 type = 0, flags = 0;
 		uint32 stream = 0;
@@ -198,88 +202,152 @@ Http2Conn::Request(const char* method, const char* scheme,
 		if (result != B_OK)
 			return result;
 
-		switch (type) {
-			case H2_SETTINGS:
-				if ((flags & H2_FLAG_ACK) == 0)
-					WriteFrame(H2_SETTINGS, H2_FLAG_ACK, 0, NULL, 0);
-				break;
-			case H2_PING:
-				if ((flags & H2_FLAG_ACK) == 0)
-					WriteFrame(H2_PING, H2_FLAG_ACK, 0, payload, len);
-				break;
-			case H2_GOAWAY:
-				fLastError = "server sent GOAWAY";
-				return B_ERROR;
-			case H2_WINDOW_UPDATE:
-				break;	// we replenish our own window below
-			case H2_RST_STREAM:
-				if (stream == streamId) {
-					fLastError = "server reset the request stream";
-					return B_ERROR;
-				}
-				break;
-
-			case H2_HEADERS:
-			case H2_CONTINUATION:
-			{
-				if (stream != streamId)
-					break;
-				size_t off = 0;
-				size_t end = len;
-				if (type == H2_HEADERS) {
-					if ((flags & 0x08) != 0 && off < end)	// PADDED
-						end -= payload[off++];
-					if ((flags & 0x20) != 0)				// PRIORITY
-						off += 5;
-				}
-				if (off <= end && end <= len) {
-					headerBlock.insert(headerBlock.end(), payload + off,
-						payload + end);
-				}
-				if ((flags & H2_FLAG_END_HEADERS) != 0)
-					headersDone = true;
-				break;
-			}
-
-			case H2_DATA:
-			{
-				if (stream != streamId)
-					break;
-				size_t off = 0;
-				size_t end = len;
+		if (type == H2_SETTINGS) {
+			if ((flags & H2_FLAG_ACK) == 0)
+				WriteFrame(H2_SETTINGS, H2_FLAG_ACK, 0, NULL, 0);
+			continue;
+		}
+		if (type == H2_PING) {
+			if ((flags & H2_FLAG_ACK) == 0)
+				WriteFrame(H2_PING, H2_FLAG_ACK, 0, payload, len);
+			continue;
+		}
+		if (type == H2_GOAWAY) {
+			fLastError = "server sent GOAWAY";
+			return B_ERROR;
+		}
+		if (type == H2_RST_STREAM && stream == streamId) {
+			fLastError = "server reset the request stream";
+			return B_ERROR;
+		}
+		if ((type == H2_HEADERS || type == H2_CONTINUATION)
+				&& stream == streamId) {
+			size_t off = 0;
+			size_t end = len;
+			if (type == H2_HEADERS) {
 				if ((flags & 0x08) != 0 && off < end)	// PADDED
 					end -= payload[off++];
-				if (end > off)
-					respBody.Append((const char*)(payload + off), end - off);
-				// Replenish flow-control windows for what we consumed.
-				if (len > 0) {
-					uint8 inc[4] = { (uint8)(len >> 24), (uint8)(len >> 16),
-						(uint8)(len >> 8), (uint8)len };
-					WriteFrame(H2_WINDOW_UPDATE, 0, streamId, inc, 4);
-					WriteFrame(H2_WINDOW_UPDATE, 0, 0, inc, 4);
+				if ((flags & 0x20) != 0)				// PRIORITY
+					off += 5;
+			}
+			if (off <= end && end <= len)
+				headerBlock.insert(headerBlock.end(), payload + off,
+					payload + end);
+			if ((flags & H2_FLAG_END_STREAM) != 0)
+				fReqEnded = true;
+			if ((flags & H2_FLAG_END_HEADERS) != 0) {
+				std::vector<HpackHeader> hdrs;
+				if (fDecoder.Decode(headerBlock.data(), headerBlock.size(),
+						hdrs) == B_OK) {
+					for (size_t i = 0; i < hdrs.size(); i++) {
+						if (hdrs[i].name == ":status")
+							status = atoi(hdrs[i].value.String());
+					}
 				}
-				break;
+				if (outStatus != NULL)
+					*outStatus = status;
+				return B_OK;
 			}
 		}
+		// A stray DATA frame before HEADERS shouldn't happen; ignore.
+	}
+	fLastError = "no response HEADERS";
+	return B_ERROR;
+}
 
-		// Decode headers once the block is complete (single-shot here: the
-		// register/map responses carry all headers before any trailers).
-		if (headersDone && status == 0 && !headerBlock.empty()) {
-			std::vector<HpackHeader> hdrs;
-			if (fDecoder.Decode(headerBlock.data(), headerBlock.size(), hdrs)
-					== B_OK) {
-				for (size_t i = 0; i < hdrs.size(); i++) {
-					if (hdrs[i].name == ":status")
-						status = atoi(hdrs[i].value.String());
-				}
-			}
-			headerBlock.clear();
+
+status_t
+Http2Conn::ReadBody(uint8* buf, size_t cap, size_t* outLen)
+{
+	if (outLen != NULL)
+		*outLen = 0;
+	if (fReqEnded)
+		return B_OK;	// end of stream
+	if (cap < kH2MaxFramePayload)
+		return B_BAD_VALUE;
+
+	uint8 payload[kH2MaxFramePayload];
+	for (int frames = 0; frames < 100000; frames++) {
+		uint8 type = 0, flags = 0;
+		uint32 stream = 0;
+		size_t len = 0;
+		status_t result = ReadFrame(&type, &flags, &stream, payload,
+			sizeof(payload), &len);
+		if (result != B_OK)
+			return result;
+
+		if (type == H2_SETTINGS) {
+			if ((flags & H2_FLAG_ACK) == 0)
+				WriteFrame(H2_SETTINGS, H2_FLAG_ACK, 0, NULL, 0);
+			continue;
 		}
+		if (type == H2_PING) {
+			if ((flags & H2_FLAG_ACK) == 0)
+				WriteFrame(H2_PING, H2_FLAG_ACK, 0, payload, len);
+			continue;
+		}
+		if (type == H2_GOAWAY) {
+			fLastError = "server sent GOAWAY";
+			return B_ERROR;
+		}
+		if (type == H2_RST_STREAM && stream == fReqStream) {
+			fLastError = "server reset the stream";
+			return B_ERROR;
+		}
+		if (type == H2_DATA && stream == fReqStream) {
+			size_t off = 0;
+			size_t end = len;
+			if ((flags & 0x08) != 0 && off < end)	// PADDED
+				end -= payload[off++];
+			size_t n = (end > off) ? end - off : 0;
+			if (n > 0)
+				memcpy(buf, payload + off, n);
+			// Replenish stream + connection flow-control windows.
+			if (len > 0) {
+				uint8 inc[4] = { (uint8)(len >> 24), (uint8)(len >> 16),
+					(uint8)(len >> 8), (uint8)len };
+				WriteFrame(H2_WINDOW_UPDATE, 0, fReqStream, inc, 4);
+				WriteFrame(H2_WINDOW_UPDATE, 0, 0, inc, 4);
+			}
+			if ((flags & H2_FLAG_END_STREAM) != 0)
+				fReqEnded = true;
+			if (outLen != NULL)
+				*outLen = n;
+			return B_OK;
+		}
+		if (type == H2_HEADERS && stream == fReqStream
+				&& (flags & H2_FLAG_END_STREAM) != 0) {
+			fReqEnded = true;	// trailers, end of stream
+			return B_OK;
+		}
+	}
+	fLastError = "body read exceeded frame budget";
+	return B_ERROR;
+}
 
-		if ((flags & H2_FLAG_END_STREAM) != 0 && stream == streamId
-				&& (type == H2_DATA || type == H2_HEADERS)) {
+
+status_t
+Http2Conn::Request(const char* method, const char* scheme,
+	const char* authority, const char* path, const char* contentType,
+	const uint8* body, size_t bodyLen, int* outStatus, BString* outRespBody)
+{
+	int status = 0;
+	status_t result = BeginRequest(method, scheme, authority, path,
+		contentType, body, bodyLen, &status);
+	if (result != B_OK)
+		return result;
+
+	BString respBody;
+	uint8 chunk[kH2MaxFramePayload];
+	for (;;) {
+		size_t n = 0;
+		result = ReadBody(chunk, sizeof(chunk), &n);
+		if (result != B_OK)
+			return result;
+		if (n > 0)
+			respBody.Append((const char*)chunk, n);
+		if (fReqEnded)
 			break;
-		}
 	}
 
 	if (outStatus != NULL)

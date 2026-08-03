@@ -83,6 +83,20 @@ public:
 									size_t bodyLen, int* outStatus,
 									BString* outRespBody);
 
+			// Streaming variant for long-poll endpoints (e.g. /machine/map).
+			// BeginRequest sends the request and reads up to and including the
+			// response HEADERS, returning `:status`; the response body is then
+			// pulled incrementally with ReadBody (one DATA frame's payload per
+			// call, `cap` must be >= kH2MaxFramePayload), which returns
+			// *outLen == 0 at end of stream.
+			status_t			BeginRequest(const char* method,
+									const char* scheme, const char* authority,
+									const char* path, const char* contentType,
+									const uint8* body, size_t bodyLen,
+									int* outStatus);
+			status_t			ReadBody(uint8* buf, size_t cap,
+									size_t* outLen);
+
 			// Write one HTTP/2 frame.
 			status_t			WriteFrame(uint8 type, uint8 flags,
 									uint32 streamId, const uint8* payload,
@@ -104,6 +118,9 @@ private:
 
 			// Client streams use odd IDs, incrementing per request.
 			uint32				fNextStreamId;
+			// In-flight streaming request state (BeginRequest/ReadBody).
+			uint32				fReqStream;
+			bool				fReqEnded;
 			// Response HPACK decoder: its dynamic table persists for the life of
 			// the connection, across all responses.
 			HpackDecoder		fDecoder;
