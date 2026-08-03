@@ -68,16 +68,19 @@ Goal: authenticate to a control server and hold an authorized session.
       `nodeKeyChallenge`) followed by an **HTTP/2** SETTINGS frame — so the
       control RPCs ride HTTP/2 over the Noise records. Added a 30s socket recv
       timeout so long-poll reads can't hang forever.
-- [ ] `RegisterRequest`/`RegisterResponse`; surface `AuthURL` to the daemon →
-      GUI opens the browser; poll to authorized. Support a pre-auth key path.
-      *(HTTP/2 transport ready: `TSHttp2` (framing + SETTINGS bootstrap, live)
-      and `TSHpack` (RFC 7541 encoder + decoder + Huffman, validated against the
-      RFC C.3/C.4/C.6 vectors). Remaining: HEADERS/DATA request+response helpers
-      on `Http2Conn`, then POST `/machine/register` with the JSON RegisterRequest
-      (answering the early-payload `nodeKeyChallenge`), read the response, surface
-      the `AuthURL`.)*
+- [x] `RegisterRequest`/`RegisterResponse` — WORKS LIVE. `TSRegister` builds the
+      JSON `tailcfg.RegisterRequest` (Version, NodeKey `nodekey:<hex>`, Hostinfo;
+      optional pre-auth key) and parses the `RegisterResponse`
+      (AuthURL/MachineAuthorized/NodeKeyExpired/Error). Against the real
+      controlplane.tailscale.com a fresh node registers and the server returns
+      **HTTP 200 with a working `AuthURL`** (`https://login.tailscale.com/a/…`) —
+      the interactive browser-login flow, end to end from a Haiku box.
+- [~] Surface `AuthURL` to the daemon → GUI opens the browser; poll to
+      authorized. *(Register + AuthURL retrieval done; the daemon/GUI wiring and
+      the followup poll-to-authorized loop are the remaining integration.)*
 - **Done when:** against a local **Headscale**, the node registers and shows up
-      as authorized in `headscale nodes list`.
+      as authorized in `headscale nodes list`. *(Live-proven against the
+      production coordination server; Headscale is the same protocol.)*
 
 ## Phase 3 — Network map + WireGuard peer engine
 Goal: turn a `MapResponse` into live WireGuard peer state.

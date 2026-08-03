@@ -37,6 +37,7 @@ SRCS = \
 	../backend/tailscale/TSControlConn.cpp \
 	../backend/tailscale/TSHttp2.cpp \
 	../backend/tailscale/TSHpack.cpp \
+	../backend/tailscale/TSRegister.cpp \
 	../backend/tailscale/TSTls.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/WireGuardConfigParser.cpp \

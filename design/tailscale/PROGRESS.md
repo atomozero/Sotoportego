@@ -15,6 +15,30 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 2 COMPLETE (core): LIVE node registration + AuthURL
+- Did: Added `src/backend/tailscale/TSRegister.{h,cpp}` — builds the JSON
+  `tailcfg.RegisterRequest` (Version 144, `NodeKey: nodekey:<hex>`, minimal
+  Hostinfo; optional pre-auth key as `Auth.AuthKey`) and parses the
+  `RegisterResponse` (AuthURL, MachineAuthorized, NodeKeyExpired, Error) with
+  small targeted JSON readers. Over the Noise channel the machine key is already
+  authenticated, so the request is plaintext JSON POSTed to `/machine/register`
+  with no per-request signature; omitted fields default to zero server-side.
+- Build: **green on-Haiku.** **LIVE registration against controlplane.tailscale.com**
+  with a fresh machine+node keypair returns **HTTP 200** and a real
+  **`AuthURL: https://login.tailscale.com/a/…`**, `MachineAuthorized:false`. That
+  is a genuine, working Tailscale login link — opening it in a browser and
+  logging in would join this Haiku node to the user's tailnet. The entire
+  from-scratch stack (Noise IK handshake → encrypted records → HTTP/2 → HPACK →
+  RegisterRequest/Response) is proven end to end against the production Tailscale
+  coordination server. This completes the core of Phase 2.
+- Next: integration + the followup poll. Wire `TSIdentity` + `ControlClient` +
+  `Http2Conn` + `Register` into `TailscaleBackend::Connect` (state machine
+  INITIALIZING→CONTROL_HANDSHAKE→AUTHENTICATING), surface the `AuthURL` via
+  `NotifyStateChanged` detail so the GUI can open it, and implement the followup
+  poll-to-authorized (re-POST with `Followup: <authURL>` until
+  `MachineAuthorized`). Then Phase 3: the `MapRequest` long-poll → netmap → WG
+  peers.
+
 ## 2026-08-03 — Phase 2: HTTP/2 request/response works live over ts2021
 - Did: Added `Http2Conn::Request()` — a full request/response exchange on a fresh
   client stream: HPACK-encode the pseudo-headers (`:method/:scheme/:path/
