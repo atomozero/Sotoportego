@@ -15,6 +15,32 @@ Format per entry:
 
 ---
 
+## 2026-08-03 — Phase 2: TLS client + control /key fetch (verified end-to-end)
+- Did: Added `src/backend/tailscale/TSTls.{h,cpp}` — a blocking OpenSSL TLS
+  client over a Haiku BSD socket (`TlsClient`) plus a one-shot `HttpsGet` helper.
+  `Connect()` resolves via `getaddrinfo` (AF_UNSPEC), does the TCP connect, then
+  the TLS handshake with SNI and, by default, full certificate verification
+  (`SSL_VERIFY_PEER` + default verify paths + `X509_VERIFY_PARAM_set1_host`);
+  `SetInsecure(true)` opts out for self-hosted Headscale with an out-of-band
+  trusted key. `Read()` maps a peer close (`SSL_ERROR_ZERO_RETURN`, and the
+  `SSL_ERROR_SYSCALL`+errno==0 EOF case) to a clean 0 so read-to-end works with
+  `Connection: close`. Linked `libssl` in the server Makefile (previously only
+  `libcrypto`).
+- Build: **green on-Haiku.** End-to-end test (linked against `TSTls.o`): a
+  cert-verified `HttpsGet("controlplane.tailscale.com", 443, "/key?v=88")`
+  returns HTTP 200 and a body carrying the control server's Noise static public
+  key — extracted `mkey:7d2792f9c98d753d2042471536801949104c247f95eac770f8fb3215
+  95e2173b`, matching a direct `curl` of the same endpoint. So Haiku's OpenSSL
+  finds a CA bundle via the default paths and our verification path works. This
+  `mkey` is exactly the `remoteStaticPub` that `NoiseIK::InitInitiator` pins.
+- Next: the `ts2021` POST transport that carries the framed Noise handshake.
+  Implement the outer wire framing (Tailscale's `initiation`/`response`/`record`
+  message headers: type byte + big-endian length, plus the initiation version),
+  parse the `/key` JSON for the `mkey`, run `NoiseIK` message 1/2 over the TLS
+  stream to `POST <control>/ts2021`, then send the first control `RegisterRequest`
+  inside the established Noise channel. Then surface the `AuthURL`. Headscale as
+  the first live target.
+
 ## 2026-08-03 — Phase 2 (start): Noise IK core for ts2021
 - Did: Added `src/backend/tailscale/TSNoise.{h,cpp}` — a generic Noise IK
   handshake (SymmetricState + HandshakeState) for the `Noise_IK_25519_ChaChaPoly_

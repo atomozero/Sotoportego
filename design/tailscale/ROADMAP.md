@@ -49,7 +49,11 @@ Goal: authenticate to a control server and hold an authorized session.
       keys + handshake hash, payloads round-trip, tampering rejected. The
       ts2021-specific outer framing (msg-type/version headers) is added with the
       transport, next.)*
-- [ ] OpenSSL TLS client wrapper; HTTP transport to `<control>/ts2021`.
+- [~] OpenSSL TLS client wrapper; HTTP transport to `<control>/ts2021`.
+      *(`TSTls` TLS client + `HttpsGet` done and verified end-to-end: a
+      cert-verified TLS GET of `controlplane.tailscale.com/key` returns HTTP 200
+      and the control server's `mkey:` Noise public key. Linked libssl. The
+      `POST /ts2021` framed-Noise transport is the remaining part.)*
 - [ ] `RegisterRequest`/`RegisterResponse`; surface `AuthURL` to the daemon →
       GUI opens the browser; poll to authorized. Support a pre-auth key path.
 - **Done when:** against a local **Headscale**, the node registers and shows up

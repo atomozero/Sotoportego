@@ -32,6 +32,7 @@ SRCS = \
 	../backend/tailscale/TailscaleBackend.cpp \
 	../backend/tailscale/TSIdentity.cpp \
 	../backend/tailscale/TSNoise.cpp \
+	../backend/tailscale/TSTls.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/WireGuardConfigParser.cpp \
 	../common/WireGuardRoutes.cpp \
@@ -48,10 +49,11 @@ RSRCS =
 
 # Libraries to link against. libbe provides BApplication / BMessage / etc.;
 # libnetwork carries the POSIX socket API the backends use; libcrypto (OpenSSL)
-# provides X25519 and ChaCha20-Poly1305 for the WireGuard handshake.
+# provides X25519 and ChaCha20-Poly1305 for the WireGuard handshake; libssl is
+# the TLS client transport for the Tailscale control channel and DERP.
 # $(STDCPPLIBS) pulls in libstdc++/libsupc++ — the makefile-engine links with
 # `cc`, which does not add the C++ runtime itself.
-LIBS = be network crypto $(STDCPPLIBS)
+LIBS = be network crypto ssl $(STDCPPLIBS)
 
 # Additional paths to directories following the standard libXXX.so layout.
 LIBPATHS =
