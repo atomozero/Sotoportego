@@ -14,6 +14,7 @@
 #include "VPNStats.h"
 
 #include "MagicSock.h"
+#include "TSDerp.h"
 #include "TSIdentity.h"
 #include "TSSessionState.h"
 
@@ -87,13 +88,25 @@ private:
 			void				_StopDataPlane();
 	static	int32				_TunReaderEntry(void* self);
 	static	int32				_SockReaderEntry(void* self);
+	static	int32				_DerpReaderEntry(void* self);
 			int32				_RunTunReader();
 			int32				_RunSockReader();
+			int32				_RunDerpReader();
+	// Connect the DERP relay for the netmap's home region (a fallback path when
+	// no direct route exists). Runs on the worker.
+			void				_BringUpDerp();
+	// Demux one raw WireGuard packet (from magicsock or DERP): a handshake
+	// response completes the session; a type-4 data message decrypts to the tun.
+			void				_HandleWireGuardPacket(const uint8* buf,
+									size_t len);
 	// Encapsulate + send `packet` to `peer` on its current path (direct UDP for
 	// now); lazily initiates a handshake if the peer has no transport keys yet.
 	// Caller holds fSessionLock.
 			void				_SendToPeer(ts::ManagedPeer* peer,
 									const uint8* packet, size_t len);
+	// Send raw WireGuard bytes to a peer over its best path (direct or DERP).
+			void				_SendPeerBytes(ts::ManagedPeer* peer,
+									const uint8* buf, size_t len);
 
 			VPNState			fState;
 			VPNStats			fStats;
@@ -130,7 +143,12 @@ private:
 			int					fTunFd;			// /dev/tun/N, -1 when none
 			thread_id			fTunReader;		// -1 when none
 			thread_id			fSockReader;	// -1 when none
+			thread_id			fDerpReader;	// -1 when none
 			BLocker				fSessionLock;
+
+			// DERP relay for the home region (fallback path).
+			ts::DerpClient		fDerp;
+			bool				fDerpUp;
 };
 
 

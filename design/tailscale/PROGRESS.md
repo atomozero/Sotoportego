@@ -15,6 +15,25 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 5: DERP relay path wired into the data plane
+- Did: Added the DERP fallback path so a peer is reachable from t=0 even without a
+  direct route. On the first netmap the worker also connects a `DerpClient` to the
+  home-region relay (from the DERPMap, keyed by our node key) and starts a third
+  reader thread. Refactored the WireGuard demux into `_HandleWireGuardPacket`
+  shared by the magicsock and DERP readers, and `_SendPeerBytes` now sends over a
+  direct UDP endpoint when known, else relays via `DerpClient::SendPacket(nodeKey,
+  …)`. `_StopDataPlane` closes the relay (unblocking its reader) and joins the
+  thread; added `DerpClient::Close`.
+- Build: **green on-Haiku** (daemon ~413 KB); offline suite 34/34. The
+  `DerpClient` handshake itself is already live-proven against a production DERP
+  relay; here it's driven from the real netmap's home region, which needs an
+  authorized session.
+- Still unproven end to end (no packet has flowed) and still to do: the disco
+  ping/pong sweep that upgrades a DERP path to direct (feeding
+  `PeerPath::UpgradeToDirect`) and handling inbound disco/STUN in the sock reader,
+  plus AllowedIPs route install, the MagicDNS 100.100.100.100:53 bind, and
+  `RecoverIfCrashed`. All to be validated on a live two-node tailnet / Headscale.
+
 ## 2026-08-04 — Phase 5/6: packet data plane (reader threads) — user-authorised
 - Did: Implemented the on-device packet path in `TailscaleBackend` (the user
   chose "build it anyway" knowing it can't be validated here without a two-node

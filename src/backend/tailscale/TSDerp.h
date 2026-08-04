@@ -70,6 +70,9 @@ public:
 			ssize_t				RecvPacket(uint8 outSrcKey[32], uint8* out,
 									size_t cap);
 
+			// Close the relay connection (also unblocks a blocked RecvPacket).
+			void				Close() { fTls.Close(); }
+
 			const uint8*		ServerKey() const { return fServerKey; }
 			const char*			LastError() const { return fLastError.String(); }
 

@@ -51,7 +51,9 @@ TailscaleBackend::TailscaleBackend()
 	fTunFd(-1),
 	fTunReader(-1),
 	fSockReader(-1),
-	fSessionLock("ts session")
+	fDerpReader(-1),
+	fSessionLock("ts session"),
+	fDerpUp(false)
 {
 }
 
@@ -289,24 +291,36 @@ peer_sockaddr(ts::ManagedPeer* peer, struct sockaddr_in& out)
 }
 
 
+// Send raw WireGuard bytes to a peer on its best available path: a direct UDP
+// endpoint if one is known, otherwise relayed via DERP (keyed by node key).
+// Caller holds fSessionLock.
+void
+TailscaleBackend::_SendPeerBytes(ts::ManagedPeer* peer, const uint8* buf,
+	size_t len)
+{
+	struct sockaddr_in to;
+	if (peer_sockaddr(peer, to)) {
+		fMagicSock.SendTo((struct sockaddr*)&to, sizeof(to), buf, len);
+	} else if (fDerpUp) {
+		fDerp.SendPacket(peer->wg.NodeKey(), buf, len);
+	}
+}
+
+
 void
 TailscaleBackend::_SendToPeer(ts::ManagedPeer* peer, const uint8* packet,
 	size_t len)
 {
-	struct sockaddr_in to;
-	if (!peer_sockaddr(peer, to))
-		return;	// no path yet (DERP relay path is a further step)
-
 	if (!peer->wg.HasKeys()) {
 		// Lazily start a WireGuard handshake, throttled so a burst of packets
-		// doesn't flood initiations. The response arrives on the sock reader.
+		// doesn't flood initiations. The response arrives on a reader thread.
 		bigtime_t now = system_time();
 		if (now - peer->lastHandshake > 5000000) {
 			uint8 init[148];
 			if (peer->wg.BuildInitiation(fIdentity.NodePrivate(),
 					peer->wg.NodeKey(), init) == 148) {
 				peer->lastHandshake = now;
-				fMagicSock.SendTo((struct sockaddr*)&to, sizeof(to), init, 148);
+				_SendPeerBytes(peer, init, 148);
 			}
 		}
 		return;	// drop this data packet until the session is up
@@ -315,7 +329,91 @@ TailscaleBackend::_SendToPeer(ts::ManagedPeer* peer, const uint8* packet,
 	uint8 out[2048];
 	size_t n = peer->wg.Encapsulate(packet, len, out);
 	if (n > 0)
-		fMagicSock.SendTo((struct sockaddr*)&to, sizeof(to), out, n);
+		_SendPeerBytes(peer, out, n);
+}
+
+
+void
+TailscaleBackend::_HandleWireGuardPacket(const uint8* buf, size_t len)
+{
+	if (len < 4)
+		return;
+	if (buf[0] == 2 && len == 92) {
+		// Handshake response: receiver index (bytes 8..11) is our sender idx.
+		uint32 idx = le32(buf + 8);
+		fSessionLock.Lock();
+		ts::ManagedPeer* p = fSession.Peers().FindBySenderIndex(idx);
+		if (p != NULL)
+			p->wg.ConsumeResponse(buf, len);
+		fSessionLock.Unlock();
+	} else if (buf[0] == 4 && len >= 32) {
+		// Transport data: receiver index (bytes 4..7) is our sender idx.
+		uint32 idx = le32(buf + 4);
+		uint8 out[2048];
+		ssize_t plen = -1;
+		fSessionLock.Lock();
+		ts::ManagedPeer* p = fSession.Peers().FindBySenderIndex(idx);
+		if (p != NULL)
+			plen = p->wg.Decapsulate(buf, len, out);
+		fSessionLock.Unlock();
+		if (plen > 0 && fTunFd >= 0)
+			write(fTunFd, out, (size_t)plen);	// deliver to the tun
+	}
+}
+
+
+void
+TailscaleBackend::_BringUpDerp()
+{
+	if (fDerpUp)
+		return;
+	// Use the first node of the first DERP region as our home relay.
+	BString host;
+	const std::vector<ts::DerpRegion>& regions = fSession.Netmap().DerpRegions();
+	for (size_t i = 0; i < regions.size() && host.Length() == 0; i++) {
+		if (!regions[i].nodes.empty())
+			host = regions[i].nodes[0].hostName;
+	}
+	if (host.Length() == 0)
+		return;
+	if (fDerp.Connect(host.String(), 443, false, fIdentity.NodePrivate(),
+			fIdentity.NodePublic()) != B_OK) {
+		fprintf(stderr, "[tailscale] DERP connect to %s failed: %s\n",
+			host.String(), fDerp.LastError());
+		return;
+	}
+	fDerpUp = true;
+	printf("[tailscale] DERP relay connected (%s)\n", host.String());
+	fDerpReader = spawn_thread(_DerpReaderEntry, "tailscale-derp",
+		B_NORMAL_PRIORITY, this);
+	if (fDerpReader >= 0)
+		resume_thread(fDerpReader);
+}
+
+
+int32
+TailscaleBackend::_DerpReaderEntry(void* self)
+{
+	return ((TailscaleBackend*)self)->_RunDerpReader();
+}
+
+
+int32
+TailscaleBackend::_RunDerpReader()
+{
+	uint8 src[32];
+	uint8 buf[2048];
+	while (!fStopRequested) {
+		ssize_t n = fDerp.RecvPacket(src, buf, sizeof(buf));
+		if (n < 0)
+			break;		// relay connection dropped
+		if (n == 0)
+			continue;	// a control frame (keepalive/peer-gone/...)
+		// A relayed packet is a raw WireGuard message; demux it like a direct
+		// datagram (the receiver index identifies the session).
+		_HandleWireGuardPacket(buf, (size_t)n);
+	}
+	return 0;
 }
 
 
@@ -355,6 +453,15 @@ TailscaleBackend::_StopDataPlane()
 		status_t ignored;
 		wait_for_thread(fSockReader, &ignored);
 		fSockReader = -1;
+	}
+	if (fDerpUp) {
+		fDerp.Close();	// unblocks the DERP reader's TLS read
+		fDerpUp = false;
+	}
+	if (fDerpReader >= 0) {
+		status_t ignored;
+		wait_for_thread(fDerpReader, &ignored);
+		fDerpReader = -1;
 	}
 	if (fTunFd >= 0) {
 		close(fTunFd);
@@ -421,28 +528,7 @@ TailscaleBackend::_RunSockReader()
 
 		if (ts::MagicSock::Classify(buf, (size_t)n) != ts::PKT_WIREGUARD)
 			continue;	// disco/STUN handling lands in a later pass
-
-		if (buf[0] == 2 && n == 92) {
-			// Handshake response: receiver index (bytes 8..11) is our sender idx.
-			uint32 idx = le32(buf + 8);
-			fSessionLock.Lock();
-			ts::ManagedPeer* p = fSession.Peers().FindBySenderIndex(idx);
-			if (p != NULL)
-				p->wg.ConsumeResponse(buf, (size_t)n);
-			fSessionLock.Unlock();
-		} else if (buf[0] == 4 && n >= 32) {
-			// Transport data: receiver index (bytes 4..7) is our sender idx.
-			uint32 idx = le32(buf + 4);
-			uint8 out[2048];
-			ssize_t plen = -1;
-			fSessionLock.Lock();
-			ts::ManagedPeer* p = fSession.Peers().FindBySenderIndex(idx);
-			if (p != NULL)
-				plen = p->wg.Decapsulate(buf, (size_t)n, out);
-			fSessionLock.Unlock();
-			if (plen > 0 && fTunFd >= 0)
-				write(fTunFd, out, (size_t)plen);	// deliver to the tun
-		}
+		_HandleWireGuardPacket(buf, (size_t)n);
 	}
 	return 0;
 }
@@ -642,6 +728,7 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 				_BringUpTun(selfip.String());
 			if (fMagicSock.IsOpen() && fTunFd < 0 && fTunNode.Length() > 0)
 				_StartDataPlane();
+			_BringUpDerp();
 		}
 
 		BMessage nm(kMsgTsNetmap);
