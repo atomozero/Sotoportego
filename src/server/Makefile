@@ -45,6 +45,7 @@ SRCS = \
 	../backend/tailscale/NaClBox.cpp \
 	../backend/tailscale/TSStun.cpp \
 	../backend/tailscale/TSDisco.cpp \
+	../backend/tailscale/TSDerp.cpp \
 	../backend/tailscale/TSTls.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/WireGuardConfigParser.cpp \

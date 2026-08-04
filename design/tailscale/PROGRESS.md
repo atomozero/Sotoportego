@@ -15,6 +15,25 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 5 (start): DERP client handshake works live
+- Did: Added `src/backend/tailscale/TSDerp.{h,cpp}` — a DERP relay client. Pulled
+  the wire protocol from tailscale/derp + derphttp: an HTTP `GET /derp` upgrade
+  (`Upgrade: DERP`, expect 101), then binary frames `[type 1B][len uint32 BE]
+  [payload]`. Implemented the frame codec (buffered `ReadFrame`/`WriteFrame`),
+  the handshake (parse frameServerKey = magic `DERP🔑` + 32-byte server key; send
+  frameClientInfo = our node pub + nonce + `NaClBox`-sealed JSON to the server
+  key), and `SendPacket(dstKey, wg)` / `RecvPacket(srcKey, wg)` with PING→PONG.
+- Build: **green on-Haiku.** **LIVE handshake against derp1.tailscale.com**: the
+  `/derp` upgrade returns 101, we parse the real server key
+  (`69dcb903…4b817171`), and our boxed clientInfo is accepted (the relay keeps
+  the connection open). So the upgrade, frame codec and NaCl-boxed clientInfo all
+  interoperate with a production DERP relay.
+- Next: `MagicSock` — one UDP socket that demuxes inbound datagrams by first
+  bytes into STUN responses, disco messages (magic `TS💬`) and WireGuard
+  transport packets, drives the STUN endpoint sweep and disco probing, and
+  chooses each peer's send path (direct `sockaddr` vs. via this DERP client).
+  Then bridge it to the WireGuard transport (the `WGPeer` factor-out).
+
 ## 2026-08-04 — Phase 4 complete: disco protocol (Ping/Pong seal+open)
 - Did: Added `src/backend/tailscale/TSDisco.{h,cpp}` — the disco packet framing
   and message codecs. Pulled the exact wire format from tailscale/disco: a packet

@@ -127,8 +127,13 @@ Goal: discover our endpoints and probe peers.
 ## Phase 5 — DERP relay (first connectivity)
 Goal: packets flow between two tailnet nodes via relay.
 
-- [ ] `DERPClient`: long-lived framed TLS connection to the home-region DERP
+- [~] `DERPClient`: long-lived framed TLS connection to the home-region DERP
       from the `DERPMap`; send/recv relayed (already-WG-encrypted) packets.
+      *(Core done + handshake verified LIVE against derp1.tailscale.com: HTTP
+      `GET /derp` upgrade → 101, frameServerKey parsed (magic + key), our
+      frameClientInfo (node pub + nonce + NaCl-boxed JSON) accepted. Frame codec
+      (`[type][BE32 len][payload]`) + `SendPacket`/`RecvPacket` (with PING→PONG)
+      implemented. Relaying real packets end-to-end needs a second node.)*
 - [ ] `MagicSock`: one UDP socket demuxing STUN/disco/WireGuard; route peer
       sends through DERP when no direct path exists.
 - [ ] Wire DERP send/recv into the `WGPeer` transport path.
