@@ -217,7 +217,7 @@ DerpClient::Connect(const char* host, uint16 port, bool insecure,
 	memcpy(fServerKey, payload + kDerpMagicLen, 32);
 
 	// frameClientInfo: our node pub (32) + nonce (24) + NaClbox(json).
-	const char* infoJson = "{\"version\":2,\"meshKey\":\"\"}";
+	const char* infoJson = "{\"version\":2}";
 	size_t jsonLen = strlen(infoJson);
 	uint8 info[32 + 24 + 256];
 	memcpy(info, fNodePub, 32);

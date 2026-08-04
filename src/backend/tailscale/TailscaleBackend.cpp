@@ -358,10 +358,18 @@ TailscaleBackend::_SendPeerBytes(ts::ManagedPeer* peer, const uint8* buf,
 	size_t len)
 {
 	struct sockaddr_in to;
-	if (peer_sockaddr(peer, to))
+	if (peer_sockaddr(peer, to)) {
 		fMagicSock.SendTo((struct sockaddr*)&to, sizeof(to), buf, len);
-	else if (fDerpUp)
+	} else if (fDerpUp) {
+		if (getenv("TS_DP") != NULL) {
+			const uint8* k = peer->wg.NodeKey();
+			printf("[dp] DERP send %zu B to %02x%02x%02x.. (derp region %d)\n",
+				len, k[0], k[1], k[2], peer->derpRegion);
+		}
 		fDerp.SendPacket(peer->wg.NodeKey(), buf, len);
+	} else if (getenv("TS_DP") != NULL) {
+		printf("[dp] no path: DERP down and no direct endpoint\n");
+	}
 }
 
 
@@ -645,9 +653,28 @@ TailscaleBackend::_BringUpDerp()
 {
 	if (fDerpUp)
 		return;
-	// Use the first node of the first DERP region as our home relay.
+	const ts::TSNetmap& nm = fSession.Netmap();
+	const std::vector<ts::DerpRegion>& regions = nm.DerpRegions();
+
+	// To relay to a peer over DERP you must connect to the region that peer is
+	// homed on -- a DERP server only delivers to keys connected to it (regions
+	// don't cross-forward). Pick the first peer's home region; both ends then
+	// meet on the same relay. Fall back to the first region if unknown.
+	int wantRegion = -1;
+	const std::vector<ts::ManagedPeer>& peers = fSession.Peers().Peers();
+	for (size_t i = 0; i < peers.size(); i++) {
+		if (peers[i].derpRegion > 0) {
+			wantRegion = peers[i].derpRegion;
+			break;
+		}
+	}
+
 	BString host;
-	const std::vector<ts::DerpRegion>& regions = fSession.Netmap().DerpRegions();
+	if (wantRegion > 0) {
+		const ts::DerpRegion* r = nm.DerpRegionById(wantRegion);
+		if (r != NULL && !r->nodes.empty())
+			host = r->nodes[0].hostName;
+	}
 	for (size_t i = 0; i < regions.size() && host.Length() == 0; i++) {
 		if (!regions[i].nodes.empty())
 			host = regions[i].nodes[0].hostName;
@@ -683,6 +710,9 @@ TailscaleBackend::_RunDerpReader()
 	uint8 buf[2048];
 	while (!fStopRequested) {
 		ssize_t n = fDerp.RecvPacket(src, buf, sizeof(buf));
+		if (getenv("TS_DP") != NULL && n > 0)
+			printf("[dp] DERP recv %zd B from %02x%02x%02x..\n",
+				n, src[0], src[1], src[2]);
 		if (n < 0)
 			break;		// relay connection dropped
 		if (n == 0)
