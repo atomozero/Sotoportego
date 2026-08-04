@@ -15,6 +15,28 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 4 complete: disco protocol (Ping/Pong seal+open)
+- Did: Added `src/backend/tailscale/TSDisco.{h,cpp}` — the disco packet framing
+  and message codecs. Pulled the exact wire format from tailscale/disco: a packet
+  is `Magic("TS💬" = 54 53 f0 9f 92 ac) + senderDiscoPub(32) + nonce(24) +
+  NaClBox(payload)`; the plaintext is a 2-byte header (type + version) then
+  fields. Implemented Ping (12-byte TxID + optional 32-byte node key) and Pong
+  (TxID + the observed source ip:port, encoded as Tailscale's 16-byte v4-mapped
+  IPv6 + 2-byte port), plus `DiscoSeal`/`DiscoOpen` which box to/from the disco
+  keys with a fresh random nonce and check the magic.
+- Build: **green on-Haiku.** Unit test: a Ping (with node key) and a Pong
+  (`151.34.38.188:46089`) each seal into a full packet and open back with the
+  right sender key, type, TxID and fields; the v4-mapped ip:port round-trips; and
+  a single flipped ciphertext byte fails to open. **Phase 4 primitives are now
+  complete** — NaCl box (canonical vectors), STUN (live public endpoint) and disco
+  (round-trip) all verified.
+- Next: Phase 5 — the DERP client. One long-lived framed TLS connection to a
+  home-region relay (host from the netmap's DERPMap), speaking DERP's binary
+  frame protocol (send our node key, then SendPacket(dstKey, wgBytes) /
+  RecvPacket(srcKey, wgBytes)). This gives first-packet connectivity before the
+  disco direct-path upgrade. Also start `MagicSock` (one UDP socket demuxing
+  STUN/disco/WireGuard).
+
 ## 2026-08-04 — Phase 4: STUN client (live public endpoint discovered)
 - Did: Added `src/backend/tailscale/TSStun.{h,cpp}` — a minimal RFC 5389 STUN
   binding client. `StunBuildRequest` emits a 20-byte binding request with a

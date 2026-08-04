@@ -113,9 +113,16 @@ Goal: discover our endpoints and probe peers.
       parse, plus a `StunQuery` UDP round-trip. Verified offline (crafted
       response) and LIVE against a public STUN server, which reflected our real
       public `ip:port` — exactly the endpoint magicsock reports for hole-punching.)*
-- [ ] `TSDisco`: encode/decode disco ping/pong; report local endpoints to
+- [x] `TSDisco`: encode/decode disco ping/pong; report local endpoints to
       control on the next `MapRequest`.
+      *(Done: the disco packet framing (magic `TS💬` + senderDiscoPub + nonce +
+      NaCl box) plus Ping (txid + node key) and Pong (txid + observed
+      v4-mapped ip:port) codecs. Verified: seal→open round-trips both messages
+      and a tampered byte is rejected. Reporting endpoints to control is
+      magicsock's job (Phase 5/6).)*
 - **Done when:** NaCl box vectors pass and STUN returns our public endpoint.
+      *(Both done — NaCl canonical vectors pass, STUN returned our real public
+      endpoint live, and disco messages round-trip. Phase 4 primitives complete.)*
 
 ## Phase 5 — DERP relay (first connectivity)
 Goal: packets flow between two tailnet nodes via relay.
