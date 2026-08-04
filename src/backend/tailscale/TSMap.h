@@ -39,7 +39,8 @@ public:
 									uint16 version, const uint8 nodePub[32],
 									const uint8 discoPub[32],
 									const char* hostname,
-									const char* endpointsJson, int* outStatus);
+									const char* endpointsJson, bool stream,
+									int* outStatus);
 
 			// Read the next length-prefixed MapResponse JSON message into
 			// `outJson`. Returns B_OK with a message, B_ENTRY_NOT_FOUND at clean

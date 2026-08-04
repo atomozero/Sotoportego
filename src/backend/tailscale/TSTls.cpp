@@ -14,6 +14,8 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 
+#include <Autolock.h>
+
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
@@ -28,7 +30,8 @@ TlsClient::TlsClient()
 	fCtx(NULL),
 	fSsl(NULL),
 	fInsecure(false),
-	fLastError("")
+	fLastError(""),
+	fIoLock("ts tls io")
 {
 }
 
@@ -141,11 +144,24 @@ TlsClient::Connect(const char* host, uint16 port)
 }
 
 
+void
+TlsClient::SetReadTimeout(int seconds)
+{
+	if (fSocket < 0)
+		return;
+	struct timeval tv;
+	tv.tv_sec = seconds;
+	tv.tv_usec = 0;
+	setsockopt(fSocket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
+
+
 ssize_t
 TlsClient::Write(const void* buf, size_t len)
 {
 	if (fSsl == NULL)
 		return -1;
+	BAutolock lock(fIoLock);
 	int n = SSL_write((SSL*)fSsl, buf, (int)len);
 	if (n <= 0) {
 		_SetError("SSL_write");
@@ -160,6 +176,7 @@ TlsClient::Read(void* buf, size_t len)
 {
 	if (fSsl == NULL)
 		return -1;
+	BAutolock lock(fIoLock);
 	int n = SSL_read((SSL*)fSsl, buf, (int)len);
 	if (n > 0)
 		return n;

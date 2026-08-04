@@ -52,6 +52,14 @@ public:
 									const uint8 nodePub[32], const char* hostname,
 									const char* authURL, RegisterResult& out);
 
+			// Prime the connection parameters (host/port/keys/version) without
+			// registering, so a second session can Establish() and drive its
+			// own request (e.g. a one-shot endpoint update) with the same node.
+			void				SetParams(const char* host, uint16 port,
+									bool insecure, uint16 version,
+									const uint8 machinePriv[32],
+									const uint8 machinePub[32]);
+
 			// Open a fresh handshake + HTTP/2 connection (no request), so the
 			// caller can drive the map long-poll on Http2(). Returns B_OK.
 			status_t			Establish();

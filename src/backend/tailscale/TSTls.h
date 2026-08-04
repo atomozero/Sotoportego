@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <sys/types.h>
 
+#include <Locker.h>
 #include <String.h>
 #include <SupportDefs.h>
 
@@ -46,8 +47,16 @@ public:
 			// handshake with SNI = host. Returns B_OK or an error.
 			status_t			Connect(const char* host, uint16 port);
 
+			// Override the receive timeout (default 30s from Connect). A short
+			// timeout lets a reader thread release the I/O lock promptly so a
+			// concurrent writer isn't starved -- needed for DERP, where one
+			// thread reads while another sends.
+			void				SetReadTimeout(int seconds);
+
 			// Blocking write/read of application data over the TLS session.
-			// Return bytes transferred, 0 on clean EOF (read), or -1 on error.
+			// Return bytes transferred, 0 on clean EOF (read), or -1 on error
+			// (-2 on a receive timeout). Read and Write serialise on an internal
+			// lock: OpenSSL forbids concurrent access to one SSL object.
 			ssize_t				Write(const void* buf, size_t len);
 			ssize_t				Read(void* buf, size_t len);
 
@@ -66,6 +75,7 @@ private:
 			void*				fSsl;	// SSL*      the OpenSSL headers here)
 			bool				fInsecure;
 			BString				fLastError;
+			BLocker				fIoLock;	// serialises SSL_read / SSL_write
 };
 
 

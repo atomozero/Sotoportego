@@ -184,6 +184,10 @@ DerpClient::Connect(const char* host, uint16 port, bool insecure,
 		fLastError.SetToFormat("DERP TLS connect failed: %s", fTls.LastError());
 		return r;
 	}
+	// The DERP reader and the packet sender hit this TLS session from two
+	// threads; a short read timeout makes the reader drop the shared I/O lock
+	// about once a second so a send is never blocked behind a 30s read.
+	fTls.SetReadTimeout(1);
 
 	BString req;
 	req.SetToFormat(

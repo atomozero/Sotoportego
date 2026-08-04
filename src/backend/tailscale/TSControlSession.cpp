@@ -37,6 +37,20 @@ ControlSession::~ControlSession()
 }
 
 
+void
+ControlSession::SetParams(const char* host, uint16 port, bool insecure,
+	uint16 version, const uint8 machinePriv[32], const uint8 machinePub[32])
+{
+	fHost = host;
+	fPort = port;
+	fInsecure = insecure;
+	fVersion = version;
+	memcpy(fMachinePriv, machinePriv, 32);
+	memcpy(fMachinePub, machinePub, 32);
+	fHaveParams = true;
+}
+
+
 status_t
 ControlSession::_Establish()
 {

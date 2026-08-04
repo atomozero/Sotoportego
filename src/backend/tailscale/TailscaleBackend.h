@@ -96,6 +96,11 @@ private:
 	// Connect the DERP relay for the netmap's home region (a fallback path when
 	// no direct route exists). Runs on the worker.
 			void				_BringUpDerp();
+	// Tell control our home DERP region (endpoint "127.3.3.40:<region>") plus
+	// our LAN endpoint, via a one-shot MapRequest on a second connection, so
+	// peers get a return path to us over the relay. Runs on the worker after
+	// _BringUpDerp.
+			void				_AdvertiseDerpHome(const char* lanEndpoint);
 	// Demux one raw WireGuard packet (from magicsock or DERP): a handshake
 	// response completes the session; a type-4 data message decrypts to the tun.
 			void				_HandleWireGuardPacket(const uint8* buf,
@@ -166,6 +171,7 @@ private:
 			// DERP relay for the home region (fallback path).
 			ts::DerpClient		fDerp;
 			bool				fDerpUp;
+			int					fDerpHomeRegion;	// -1 until connected
 };
 
 

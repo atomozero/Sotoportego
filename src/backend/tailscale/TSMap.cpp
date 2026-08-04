@@ -27,7 +27,7 @@ MapStream::MapStream()
 status_t
 MapStream::Begin(Http2Conn& h2, const char* host, uint16 version,
 	const uint8 nodePub[32], const uint8 discoPub[32], const char* hostname,
-	const char* endpointsJson, int* outStatus)
+	const char* endpointsJson, bool stream, int* outStatus)
 {
 	fHttp2 = &h2;
 	fAcc.clear();
@@ -46,8 +46,8 @@ MapStream::Begin(Http2Conn& h2, const char* host, uint16 version,
 	body << "\"Version\":" << (int32)version << ",";
 	body << "\"NodeKey\":\"nodekey:" << nodeHex << "\",";
 	body << "\"DiscoKey\":\"discokey:" << discoHex << "\",";
-	body << "\"Stream\":true,";
-	body << "\"OmitPeers\":false,";
+	body << "\"Stream\":" << (stream ? "true" : "false") << ",";
+	body << "\"OmitPeers\":" << (stream ? "false" : "true") << ",";
 	body << "\"Endpoints\":["
 		<< (endpointsJson != NULL ? endpointsJson : "") << "],";
 	body << "\"Hostinfo\":{";

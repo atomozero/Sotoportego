@@ -59,7 +59,8 @@ TailscaleBackend::TailscaleBackend()
 	fDnsFd(-1),
 	fDnsThread(-1),
 	fSessionLock("ts session"),
-	fDerpUp(false)
+	fDerpUp(false),
+	fDerpHomeRegion(-1)
 {
 }
 
@@ -358,18 +359,10 @@ TailscaleBackend::_SendPeerBytes(ts::ManagedPeer* peer, const uint8* buf,
 	size_t len)
 {
 	struct sockaddr_in to;
-	if (peer_sockaddr(peer, to)) {
+	if (peer_sockaddr(peer, to))
 		fMagicSock.SendTo((struct sockaddr*)&to, sizeof(to), buf, len);
-	} else if (fDerpUp) {
-		if (getenv("TS_DP") != NULL) {
-			const uint8* k = peer->wg.NodeKey();
-			printf("[dp] DERP send %zu B to %02x%02x%02x.. (derp region %d)\n",
-				len, k[0], k[1], k[2], peer->derpRegion);
-		}
+	else if (fDerpUp)
 		fDerp.SendPacket(peer->wg.NodeKey(), buf, len);
-	} else if (getenv("TS_DP") != NULL) {
-		printf("[dp] no path: DERP down and no direct endpoint\n");
-	}
 }
 
 
@@ -670,14 +663,19 @@ TailscaleBackend::_BringUpDerp()
 	}
 
 	BString host;
+	int chosen = -1;
 	if (wantRegion > 0) {
 		const ts::DerpRegion* r = nm.DerpRegionById(wantRegion);
-		if (r != NULL && !r->nodes.empty())
+		if (r != NULL && !r->nodes.empty()) {
 			host = r->nodes[0].hostName;
+			chosen = wantRegion;
+		}
 	}
 	for (size_t i = 0; i < regions.size() && host.Length() == 0; i++) {
-		if (!regions[i].nodes.empty())
+		if (!regions[i].nodes.empty()) {
 			host = regions[i].nodes[0].hostName;
+			chosen = regions[i].regionID;
+		}
 	}
 	if (host.Length() == 0)
 		return;
@@ -688,11 +686,49 @@ TailscaleBackend::_BringUpDerp()
 		return;
 	}
 	fDerpUp = true;
+	fDerpHomeRegion = chosen;
 	printf("[tailscale] DERP relay connected (%s)\n", host.String());
 	fDerpReader = spawn_thread(_DerpReaderEntry, "tailscale-derp",
 		B_NORMAL_PRIORITY, this);
 	if (fDerpReader >= 0)
 		resume_thread(fDerpReader);
+}
+
+
+void
+TailscaleBackend::_AdvertiseDerpHome(const char* lanEndpoint)
+{
+	// Endpoints = [ <lan, if any>, "127.3.3.40:<region>" ]. The 127.3.3.40:N
+	// form is Tailscale's magic encoding for "reachable via DERP region N";
+	// advertising it gives peers a return path to us over the relay.
+	BString eps;
+	if (lanEndpoint != NULL && *lanEndpoint != '\0') {
+		eps << lanEndpoint;
+		eps << ",";
+	}
+	eps << "\"127.3.3.40:" << fDerpHomeRegion << "\"";
+
+	uint16 version = ts::kControlProtocolVersion;
+	ts::ControlSession sess;
+	sess.SetParams(fControlHost.String(), 443, false, version,
+		fIdentity.MachinePrivate(), fIdentity.MachinePublic());
+	if (sess.Establish() != B_OK)
+		return;
+
+	ts::MapStream m;
+	int status = 0;
+	status_t r = m.Begin(sess.Http2(), fControlHost.String(), version,
+		fIdentity.NodePublic(), fIdentity.DiscoPublic(), fHostname.String(),
+		eps.String(), false /* one-shot, not streamed */, &status);
+	if (r != B_OK || status != 200) {
+		printf("[tailscale] DERP-home advertise failed (HTTP %d)\n", status);
+		return;
+	}
+	// Read and discard the single MapResponse so control fully processes the
+	// updated endpoints before the connection closes.
+	BString msg;
+	m.ReadMessage(msg);
+	printf("[tailscale] advertised DERP home region %d\n", fDerpHomeRegion);
 }
 
 
@@ -710,9 +746,6 @@ TailscaleBackend::_RunDerpReader()
 	uint8 buf[2048];
 	while (!fStopRequested) {
 		ssize_t n = fDerp.RecvPacket(src, buf, sizeof(buf));
-		if (getenv("TS_DP") != NULL && n > 0)
-			printf("[dp] DERP recv %zd B from %02x%02x%02x..\n",
-				n, src[0], src[1], src[2]);
 		if (n < 0)
 			break;		// relay connection dropped
 		if (n == 0)
@@ -1065,7 +1098,7 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 	int status = 0;
 	status_t result = map.Begin(session.Http2(), fControlHost.String(), version,
 		fIdentity.NodePublic(), fIdentity.DiscoPublic(), fHostname.String(),
-		endpointsJson.String(), &status);
+		endpointsJson.String(), true /* stream */, &status);
 	if (result != B_OK || status != 200) {
 		BMessage m(kMsgTsFailed);
 		BString detail;
@@ -1112,6 +1145,10 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 			if (fMagicSock.IsOpen() && fTunFd < 0 && fTunNode.Length() > 0)
 				_StartDataPlane();
 			_BringUpDerp();
+			// Now that we know which DERP region we're homed on, tell control
+			// (plus our LAN endpoint) so peers have a return path to us.
+			if (fDerpUp && fDerpHomeRegion > 0)
+				_AdvertiseDerpHome(endpointsJson.String());
 			_StartMagicDns();
 		}
 
