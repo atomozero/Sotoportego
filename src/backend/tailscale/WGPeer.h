@@ -41,6 +41,20 @@ public:
 									const uint8 recvKey[32], uint32 receiverIndex);
 			bool				HasKeys() const { return fHasKeys; }
 
+			// --- WireGuard Noise IKpsk2 handshake (initiator) ---------------
+			// Build the 148-byte type-1 handshake initiation to `out`, using our
+			// node private key and the peer's node public key; stashes the
+			// ephemeral + chaining/hash state for ConsumeResponse. Tailscale
+			// peers use no preshared key. Returns 148, or -1 on error.
+			ssize_t				BuildInitiation(const uint8 ourPriv[32],
+									const uint8 peerPub[32], uint8 out[148]);
+			// Consume the 92-byte type-2 handshake response: derive the
+			// transport keys and install them (SetTransport). Returns true on a
+			// valid, authenticated response for our initiation.
+			bool				ConsumeResponse(const uint8* resp, size_t len);
+			// Our session index sent in the initiation (peers echo it back).
+			uint32				SenderIndex() const { return fSenderIndex; }
+
 			// Encapsulate a plaintext IP packet (plainLen 0 == keepalive) into a
 			// type-4 transport message. `out` needs 16 + roundup16(plainLen) + 16
 			// bytes. Returns the total length, or 0 on error.
@@ -67,6 +81,15 @@ private:
 
 			uint64				fReplayCounter;
 			uint64				fReplayBitmap[128];
+
+			// Handshake state (between BuildInitiation and ConsumeResponse).
+			uint8				fOurPriv[32];
+			uint8				fPeerStatic[32];
+			uint8				fEphemeralPriv[32];
+			uint8				fEphemeralPub[32];
+			uint8				fChainingKey[32];
+			uint8				fHash[32];
+			uint32				fSenderIndex;
 };
 
 }	// namespace ts

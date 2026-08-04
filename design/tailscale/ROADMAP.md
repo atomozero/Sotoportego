@@ -93,13 +93,15 @@ Goal: turn a `MapResponse` into live WireGuard peer state.
       (regions → relay nodes host/ip/port) and DNSConfig (resolvers + domains) —
       all unit-verified against synthetic MapResponse fixtures. Live validation
       of real peer data still needs an authorized node / Headscale.)*
-- [~] Refactor `WireGuardBackend`'s transport core into a reusable per-peer
+- [x] Refactor `WireGuardBackend`'s transport core into a reusable per-peer
       `WGPeer` (handshake/transport/rekey/anti-replay), shared by both backends.
-      *(`WGPeer` created: per-peer transport keys + send counter + receiver index
-      + RFC 6479 replay window + type-4 encapsulate/decapsulate, factored from
-      WireGuardBackend and unit-verified (20-byte IPv4 round-trip, replay reject,
-      keepalive→0, tamper reject). Remaining: move the per-peer Noise IKpsk2
-      handshake + rekey into WGPeer too, and have both backends use it.)*
+      *(`WGPeer` now carries the full per-peer engine: the Noise IKpsk2 handshake
+      (`BuildInitiation` 148-byte type-1 + `ConsumeResponse` → transport keys, no
+      PSK) plus type-4 encapsulate/decapsulate + RFC 6479 replay. Unit-verified:
+      IPv4 round-trip, replay/keepalive/tamper, and the initiation message
+      format + malformed-response rejection; the handshake crypto is the same
+      logic proven in WireGuardBackend against a real peer. Remaining cleanup:
+      have WireGuardBackend itself delegate to WGPeer (rekey timer stays there).)*
 - [ ] Assign our `100.x` Tailscale IP to `tun/N`; program peers from the netmap.
 - **Done when:** peers appear with correct keys/AllowedIPs and our tun has the
       tailnet IP (still no packet path yet — that's DERP/magicsock).

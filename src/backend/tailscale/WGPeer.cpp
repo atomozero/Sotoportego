@@ -45,6 +45,27 @@ load64_le(const uint8* p)
 }
 
 
+static uint32
+load32_le(const uint8* p)
+{
+	return (uint32)p[0] | ((uint32)p[1] << 8) | ((uint32)p[2] << 16)
+		| ((uint32)p[3] << 24);
+}
+
+
+// h = HASH(h || data)
+static void
+mix_hash(uint8 h[32], const void* data, size_t len)
+{
+	wg::Blake2s s;
+	wg::HashInit(s);
+	wg::HashUpdate(s, h, 32);
+	if (len > 0)
+		wg::HashUpdate(s, data, len);
+	wg::HashFinal(s, h);
+}
+
+
 // Read the real length of an IP packet from its header so the 16-byte-multiple
 // WireGuard padding can be stripped. 0 means a keepalive (all padding).
 static size_t
@@ -72,12 +93,19 @@ WGPeer::WGPeer()
 	fHasKeys(false),
 	fReceiverIndex(0),
 	fSendCounter(0),
-	fReplayCounter(0)
+	fReplayCounter(0),
+	fSenderIndex(0)
 {
 	memset(fNodeKey, 0, sizeof(fNodeKey));
 	memset(fSendKey, 0, sizeof(fSendKey));
 	memset(fRecvKey, 0, sizeof(fRecvKey));
 	memset(fReplayBitmap, 0, sizeof(fReplayBitmap));
+	memset(fOurPriv, 0, sizeof(fOurPriv));
+	memset(fPeerStatic, 0, sizeof(fPeerStatic));
+	memset(fEphemeralPriv, 0, sizeof(fEphemeralPriv));
+	memset(fEphemeralPub, 0, sizeof(fEphemeralPub));
+	memset(fChainingKey, 0, sizeof(fChainingKey));
+	memset(fHash, 0, sizeof(fHash));
 }
 
 
@@ -153,6 +181,130 @@ WGPeer::ResetReplay()
 {
 	fReplayCounter = 0;
 	memset(fReplayBitmap, 0, sizeof(fReplayBitmap));
+}
+
+
+// WireGuard IKpsk2 handshake labels (see the protocol spec).
+static const char kConstruction[] = "Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s";
+static const char kIdentifier[] = "WireGuard v1 zx2c4 Jason@zx2c4.com";
+static const uint8 kLabelMac1[8] = { 'm', 'a', 'c', '1', '-', '-', '-', '-' };
+
+
+ssize_t
+WGPeer::BuildInitiation(const uint8 ourPriv[32], const uint8 peerPub[32],
+	uint8 out[148])
+{
+	memcpy(fOurPriv, ourPriv, 32);
+	memcpy(fPeerStatic, peerPub, 32);
+
+	uint8 staticPub[32];
+	if (!wg::DhPublic(fOurPriv, staticPub))
+		return -1;
+
+	// C = Hash(CONSTRUCTION); H = Hash(Hash(C || IDENTIFIER) || Spub_r)
+	wg::Hash(kConstruction, sizeof(kConstruction) - 1, fChainingKey);
+	{
+		wg::Blake2s s;
+		wg::HashInit(s);
+		wg::HashUpdate(s, fChainingKey, 32);
+		wg::HashUpdate(s, kIdentifier, sizeof(kIdentifier) - 1);
+		wg::HashFinal(s, fHash);
+	}
+	mix_hash(fHash, fPeerStatic, 32);
+
+	// -> e
+	if (!wg::DhGenerate(fEphemeralPriv, fEphemeralPub))
+		return -1;
+	wg::Kdf1(fChainingKey, fEphemeralPub, 32, fChainingKey);
+	mix_hash(fHash, fEphemeralPub, 32);
+
+	uint8 dh[32];
+	uint8 key[32];
+
+	// encrypted_static (es)
+	if (!wg::Dh(fEphemeralPriv, fPeerStatic, dh))
+		return -1;
+	wg::Kdf2(fChainingKey, dh, 32, fChainingKey, key);
+	uint8 encStatic[48];
+	if (!wg::AeadEncrypt(key, 0, staticPub, 32, fHash, 32, encStatic))
+		return -1;
+	mix_hash(fHash, encStatic, 48);
+
+	// encrypted_timestamp (ss)
+	if (!wg::Dh(fOurPriv, fPeerStatic, dh))
+		return -1;
+	wg::Kdf2(fChainingKey, dh, 32, fChainingKey, key);
+	uint8 timestamp[12];
+	wg::Tai64n(timestamp);
+	uint8 encTs[28];
+	if (!wg::AeadEncrypt(key, 0, timestamp, 12, fHash, 32, encTs))
+		return -1;
+	mix_hash(fHash, encTs, 28);
+
+	// Assemble the 148-byte type-1 message.
+	if (!wg::RandomBytes(&fSenderIndex, sizeof(fSenderIndex)))
+		return -1;
+	memset(out, 0, 148);
+	out[0] = 1;
+	store32_le(out + 4, fSenderIndex);
+	memcpy(out + 8, fEphemeralPub, 32);
+	memcpy(out + 40, encStatic, 48);
+	memcpy(out + 88, encTs, 28);
+	// mac1 = MAC(Hash(LABEL_MAC1 || Spub_r), msg[0:116]); mac2 stays zero.
+	uint8 mac1Key[32];
+	{
+		wg::Blake2s s;
+		wg::HashInit(s);
+		wg::HashUpdate(s, kLabelMac1, sizeof(kLabelMac1));
+		wg::HashUpdate(s, fPeerStatic, 32);
+		wg::HashFinal(s, mac1Key);
+	}
+	wg::Mac16(mac1Key, out, 116, out + 116);
+	return 148;
+}
+
+
+bool
+WGPeer::ConsumeResponse(const uint8* resp, size_t len)
+{
+	if (resp == NULL || len != 92 || resp[0] != 2)
+		return false;
+	if (load32_le(resp + 8) != fSenderIndex)
+		return false;
+
+	uint32 receiverIndex = load32_le(resp + 4);
+	const uint8* peerEphemeral = resp + 12;
+	const uint8* encNothing = resp + 44;	// 16 bytes: empty plaintext + tag
+
+	uint8 dh[32];
+	wg::Kdf1(fChainingKey, peerEphemeral, 32, fChainingKey);
+	mix_hash(fHash, peerEphemeral, 32);
+	if (!wg::Dh(fEphemeralPriv, peerEphemeral, dh))		// ee
+		return false;
+	wg::Kdf1(fChainingKey, dh, 32, fChainingKey);
+	if (!wg::Dh(fOurPriv, peerEphemeral, dh))			// se
+		return false;
+	wg::Kdf1(fChainingKey, dh, 32, fChainingKey);
+
+	// No preshared key for Tailscale peers.
+	uint8 psk[32];
+	memset(psk, 0, 32);
+	uint8 tau[32];
+	uint8 key[32];
+	wg::Kdf3(fChainingKey, psk, 32, fChainingKey, tau, key);
+	mix_hash(fHash, tau, 32);
+
+	uint8 empty[1];
+	if (!wg::AeadDecrypt(key, 0, encNothing, 16, fHash, 32, empty))
+		return false;
+	mix_hash(fHash, encNothing, 16);
+
+	// Transport keys: initiator send/recv = KDF2(C, empty).
+	uint8 sendKey[32];
+	uint8 recvKey[32];
+	wg::Kdf2(fChainingKey, NULL, 0, sendKey, recvKey);
+	SetTransport(sendKey, recvKey, receiverIndex);
+	return true;
 }
 
 

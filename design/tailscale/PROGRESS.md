@@ -15,6 +15,27 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 3/6: WGPeer WireGuard handshake (initiator)
+- Did: Gave `WGPeer` the per-peer Noise IKpsk2 handshake, ported from
+  WireGuardBackend so a Tailscale peer is now a self-contained WireGuard engine.
+  `BuildInitiation(ourPriv, peerPub)` produces the 148-byte type-1 message
+  (C=Hash(construction), H mix, `-> e, es, s, ss`, TAI64N timestamp, sender
+  index, mac1) and stashes the ephemeral/chaining/hash state;
+  `ConsumeResponse(resp)` runs the `e, ee, se`, zero-PSK KDF3 and the empty-AEAD
+  check, then derives the transport keys via KDF2 and installs them
+  (`SetTransport`). No preshared key (Tailscale peers don't use one).
+- Build: **green on-Haiku.** Unit test (verifiable parts): the initiation is 148
+  bytes, type 1, with the sender index echoed, a fresh ephemeral each call, mac1
+  set and mac2 zero; and `ConsumeResponse` rejects short / wrong-type /
+  wrong-index / garbage-tag responses without setting transport keys. Full
+  handshake completion needs a live WG responder — the identical Noise IKpsk2
+  code is already proven in WireGuardBackend against a real WireGuard server.
+  `WGPeer` is now a complete per-peer engine (handshake + transport + replay).
+- Next: the magicsock reader thread that ties the data plane together — per-peer
+  handshake over the chosen path, `WGPeer::Decapsulate` on inbound WG datagrams,
+  disco probe → `PeerPath`, and the `tun/N` bring-up with `SelfIPv4()`; verified
+  end-to-end against a two-node tailnet / Headscale.
+
 ## 2026-08-04 — Phase 7: MagicDNS populated from the netmap
 - Did: Added `MagicDns::LoadFromNetmap(TSNetmap)` — rebuilds the resolver's host
   table and tailnet domain straight from a parsed MapResponse: the domain comes
