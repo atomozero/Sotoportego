@@ -152,6 +152,15 @@ static const char* const kFieldProfileUsername	= "soto:profile:username";
 static const char* const kFieldProfileConfigPath = "soto:profile:configPath";
 // Transport protocol as a string ("udp" or "tcp"). Defaults to "udp".
 static const char* const kFieldProfileProtocol	= "soto:profile:protocol";
+
+// Tailscale peer list, folded into a status broadcast: one nested message per
+// peer under kFieldPeer, each carrying the fields below. Absent for backends
+// that have no peer concept.
+static const char* const kFieldPeer			= "soto:peer";			// BMessage[]
+static const char* const kFieldPeerName		= "soto:peer:name";		// hostname
+static const char* const kFieldPeerIP		= "soto:peer:ip";		// tailnet IPv4
+static const char* const kFieldPeerOnline	= "soto:peer:online";	// bool
+static const char* const kFieldPeerPath		= "soto:peer:path";		// "direct"/"relay"
 // Optional Tailscale pre-auth key: when set, the node registers non-
 // interactively instead of opening a browser for SSO login.
 static const char* const kFieldProfileAuthKey	= "soto:profile:authKey";

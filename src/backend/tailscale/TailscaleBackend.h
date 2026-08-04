@@ -50,6 +50,7 @@ public:
 	virtual	const char*			BackendName() const;
 	virtual	BString				LocalIP() const;
 	virtual	BString				RemoteIP() const;
+	virtual	void				FillPeers(BMessage& out);
 
 	virtual	void				MessageReceived(BMessage* message);
 

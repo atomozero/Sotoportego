@@ -37,6 +37,7 @@
 #include "CredentialsWindow.h"
 #include "DeskbarIcon.h"
 #include "HeaderView.h"
+#include "PeersWindow.h"
 #include "TailscaleWindow.h"
 #include "OpenVPNConfigParser.h"
 #include "WireGuardConfigParser.h"
@@ -67,6 +68,7 @@ static const uint32 kMsgAddTailscale		= 'gTsA';	// open the Tailscale dialog
 static const uint32 kMsgTailscaleOK			= 'gTsO';	// dialog -> create profile
 static const uint32 kMsgTailscaleSignup		= 'gTsS';	// open the account signup page
 static const uint32 kMsgTailscaleAdmin		= 'gTsD';	// open the web admin console
+static const uint32 kMsgShowPeers			= 'gTsP';	// open the peers window
 
 // Where a new user goes to create a Tailscale account (opens in the browser).
 // Tailscale has no email/password signup: an account is created by signing in
@@ -177,6 +179,8 @@ MainWindow::_BuildLayout()
 	BMenu* tailscaleMenu = new BMenu("Tailscale");
 	tailscaleMenu->AddItem(new BMenuItem("Add Tailscale network" B_UTF8_ELLIPSIS,
 		new BMessage(kMsgAddTailscale)));
+	tailscaleMenu->AddItem(new BMenuItem("Show peers" B_UTF8_ELLIPSIS,
+		new BMessage(kMsgShowPeers)));
 	tailscaleMenu->AddSeparatorItem();
 	tailscaleMenu->AddItem(new BMenuItem("Create a Tailscale account"
 		B_UTF8_ELLIPSIS, new BMessage(kMsgTailscaleSignup)));
@@ -473,6 +477,20 @@ MainWindow::MessageReceived(BMessage* message)
 			// Open the Tailscale web admin console.
 			open_url(kTailscaleAdminURL);
 			break;
+		case kMsgShowPeers:
+		{
+			// Open (or re-use) the peers window and seed it with the latest
+			// peer snapshot. fPeersWindow.IsValid() goes false once the window
+			// is closed, so a new one is created on the next request.
+			if (!fPeersWindow.IsValid()) {
+				PeersWindow* w = new PeersWindow(this);
+				fPeersWindow = BMessenger(w);
+				w->Show();
+			}
+			fLastPeers.what = kMsgPeersData;
+			fPeersWindow.SendMessage(&fLastPeers);
+			break;
+		}
 		case kMsgProfileSelected:
 		{
 			int32 index = fProfileList->CurrentSelection();
@@ -540,6 +558,7 @@ MainWindow::MessageReceived(BMessage* message)
 			}
 			_UpdateForState((VPNState)state, detail);
 			_ApplyStats(message);
+			_UpdatePeers(message);
 			break;
 		}
 
@@ -818,6 +837,22 @@ MainWindow::_MaybeOpenAuthURL(const char* detail)
 	_AppendEvent(BString("Opening login page: ").Append(url).String());
 	// Open the URL in the default web browser.
 	open_url(url.String());
+}
+
+
+void
+MainWindow::_UpdatePeers(const BMessage* status)
+{
+	// Snapshot the peer array from the status broadcast (empty for non-
+	// Tailscale sessions) and push it to the peers window if it's open.
+	fLastPeers.MakeEmpty();
+	fLastPeers.what = kMsgPeersData;
+	BMessage peer;
+	for (int32 i = 0; status->FindMessage(kFieldPeer, i, &peer) == B_OK; i++)
+		fLastPeers.AddMessage(kFieldPeer, &peer);
+
+	if (fPeersWindow.IsValid())
+		fPeersWindow.SendMessage(&fLastPeers);
 }
 
 

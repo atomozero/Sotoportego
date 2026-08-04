@@ -14,6 +14,8 @@
 #include "VPNState.h"
 #include "VPNStats.h"
 
+class BMessage;
+
 
 // Abstract interface every VPN implementation (OpenVPN, WireGuard, IPSec, ...)
 // must satisfy. A backend is owned by the daemon and lives inside the daemon's
@@ -48,6 +50,11 @@ public:
 	// defaults are empty strings; backends that know better override them.
 	virtual	BString				LocalIP() const { return BString(); }
 	virtual	BString				RemoteIP() const { return BString(); }
+
+	// Fold the current peer list into a status message (one nested kFieldPeer
+	// per peer). Only meshy backends (Tailscale) have peers; the default is a
+	// no-op.
+	virtual	void				FillPeers(BMessage& /*out*/) {}
 
 	// Provide transient credentials for the next connection attempt; the
 	// default is a no-op for backends that don't need them. Plaintext and

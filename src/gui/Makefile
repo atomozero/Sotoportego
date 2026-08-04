@@ -26,6 +26,7 @@ SRCS = \
 	ClickableStringView.cpp \
 	CredentialsWindow.cpp \
 	TailscaleWindow.cpp \
+	PeersWindow.cpp \
 	MetricPill.cpp \
 	VaporettoWindow.cpp \
 	DeskbarIcon.cpp \

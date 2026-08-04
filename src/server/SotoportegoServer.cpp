@@ -478,6 +478,9 @@ SotoportegoServer::_FillStatus(BMessage* message)
 	if (remoteIP.Length() > 0)
 		message->AddString(kFieldRemoteIP, remoteIP);
 
+	// Peer list (Tailscale); a no-op for backends without peers.
+	fBackend->FillPeers(*message);
+
 	// Home geo (constant across status updates; cheap to fold in so a fresh
 	// subscriber doesn't have to wait for the next disconnect to learn it).
 	if (fHomeCountry.Length() > 0)

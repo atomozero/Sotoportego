@@ -17,6 +17,7 @@
 #include <Messenger.h>
 
 #include "VPNProfile.h"
+#include "VPNProtocol.h"		// kFieldPeer* status fields
 
 #include "TSControl.h"			// kControlProtocolVersion
 #include "TSControlSession.h"
@@ -166,6 +167,41 @@ BString
 TailscaleBackend::RemoteIP() const
 {
 	return fRemoteIP;
+}
+
+
+void
+TailscaleBackend::FillPeers(BMessage& out)
+{
+	// Called from the daemon looper while the worker mutates the session under
+	// the same lock.
+	fSessionLock.Lock();
+	const std::vector<ts::ManagedPeer>& peers = fSession.Peers().Peers();
+	for (size_t i = 0; i < peers.size(); i++) {
+		const ts::ManagedPeer& p = peers[i];
+
+		// The peer's tailnet IPv4 is its first IPv4 AllowedIP, with the /nn
+		// prefix length stripped.
+		BString ip;
+		for (size_t j = 0; j < p.allowedIPs.size(); j++) {
+			const BString& cidr = p.allowedIPs[j];
+			if (cidr.FindFirst('.') < 0)
+				continue;	// skip IPv6
+			int slash = cidr.FindFirst('/');
+			ip = (slash >= 0) ? BString(cidr.String(), slash) : cidr;
+			break;
+		}
+
+		BMessage pm;
+		pm.AddString(kFieldPeerName,
+			p.hostname.Length() > 0 ? p.hostname.String() : "(unknown)");
+		pm.AddString(kFieldPeerIP, ip);
+		pm.AddBool(kFieldPeerOnline, p.online);
+		pm.AddString(kFieldPeerPath,
+			p.path.Mode() == ts::PATH_DIRECT ? "direct" : "relay");
+		out.AddMessage(kFieldPeer, &pm);
+	}
+	fSessionLock.Unlock();
 }
 
 

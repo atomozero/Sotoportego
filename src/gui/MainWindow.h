@@ -53,6 +53,9 @@ private:
 		// status tick).
 				void				_MaybeOpenAuthURL(const char* detail);
 			void				_ApplyStats(const BMessage* message);
+		// Cache the Tailscale peer list from a status broadcast and refresh
+		// the peers window if it is open.
+			void				_UpdatePeers(const BMessage* status);
 			void				_AppendEvent(const char* text);
 	// Rebuild the bottom status-bar line. Called from _UpdateForState
 	// and from the 1 Hz uptime tick.
@@ -139,6 +142,12 @@ private:
 		// The last Tailscale AuthURL we opened, so the browser isn't relaunched
 		// on every AUTHENTICATING status update carrying the same URL.
 			BString					fLastAuthURL;
+
+		// The peers window (a messenger so we can tell whether it's still
+		// open) plus the latest peer snapshot pushed to it on every status
+		// update.
+			BMessenger				fPeersWindow;
+			BMessage				fLastPeers;
 };
 
 
