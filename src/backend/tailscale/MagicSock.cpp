@@ -5,10 +5,14 @@
 #include "MagicSock.h"
 
 #include <errno.h>
+#include <netdb.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
 #include <sys/time.h>
+
+#include "TSStun.h"
 
 
 namespace ts {
@@ -109,6 +113,54 @@ MagicSock::Recv(void* buf, size_t cap, struct sockaddr_storage* from,
 			*fromLen = sl;
 	}
 	return n;
+}
+
+
+status_t
+MagicSock::DiscoverEndpoint(const char* stunHost, uint16 stunPort,
+	BString& outIP, uint16& outPort)
+{
+	if (fSocket < 0 || stunHost == NULL)
+		return B_NO_INIT;
+
+	char portStr[8];
+	snprintf(portStr, sizeof(portStr), "%u", (unsigned)stunPort);
+	struct addrinfo hints;
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_DGRAM;
+	struct addrinfo* res = NULL;
+	if (getaddrinfo(stunHost, portStr, &hints, &res) != 0 || res == NULL)
+		return B_NAME_NOT_FOUND;
+
+	uint8 req[20];
+	uint8 txId[12];
+	StunBuildRequest(req, txId);
+
+	status_t result = B_TIMED_OUT;
+	// A few attempts; each Recv is bounded by the socket's 1s timeout.
+	for (int attempt = 0; attempt < 3 && result != B_OK; attempt++) {
+		if (SendTo(res->ai_addr, res->ai_addrlen, req, sizeof(req))
+				!= (ssize_t)sizeof(req))
+			continue;
+		// Read datagrams until the STUN reply arrives (ignore disco/WG that
+		// might land on the shared socket meanwhile) or we time out.
+		for (int i = 0; i < 8; i++) {
+			uint8 buf[512];
+			ssize_t n = Recv(buf, sizeof(buf), NULL, NULL);
+			if (n <= 0)
+				break;	// timeout for this attempt
+			if (Classify(buf, (size_t)n) != PKT_STUN)
+				continue;
+			if (StunParseResponse(buf, (size_t)n, txId, outIP, outPort)) {
+				result = B_OK;
+				break;
+			}
+		}
+	}
+
+	freeaddrinfo(res);
+	return result;
 }
 
 

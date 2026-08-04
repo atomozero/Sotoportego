@@ -12,6 +12,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 
+#include <String.h>
 #include <SupportDefs.h>
 
 
@@ -63,6 +64,15 @@ public:
 
 			// Classify an inbound datagram by its leading bytes.
 	static	SockPacketKind		Classify(const uint8* buf, size_t len);
+
+			// STUN sweep: send a binding request from THIS socket to a STUN
+			// server (a DERP node's STUN service) and read back our reflexive
+			// public ip:port -- the endpoint peers use to reach this socket.
+			// Datagrams that aren't the STUN reply are ignored. Returns B_OK on
+			// success. This is the endpoint magicsock advertises to control.
+			status_t			DiscoverEndpoint(const char* stunHost,
+									uint16 stunPort, BString& outIP,
+									uint16& outPort);
 
 private:
 			int					fSocket;

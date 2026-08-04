@@ -15,6 +15,23 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 5: magicsock STUN sweep (live reflexive endpoint)
+- Did: Added `MagicSock::DiscoverEndpoint` — the STUN sweep run over the *shared*
+  magicsock UDP socket (not a throwaway one), so the reflexive ip:port it learns
+  is the mapping for the exact port peers reach us on. It sends a `TSStun` binding
+  request, then reads datagrams off the socket, skipping anything that isn't a
+  STUN reply (`Classify` demux) until the matching binding-success lands, with a
+  few retries bounded by the socket's 1s recv timeout.
+- Build: **green on-Haiku.** **LIVE test**: a magicsock bound to an ephemeral port
+  discovered this box's reflexive public endpoint (`151.34.38.188:46285`) via a
+  public STUN server over the shared socket — magicsock + STUN + the classifier
+  working together on the real network. This endpoint is what magicsock reports to
+  control for hole-punching.
+- Next: the magicsock reader thread that dispatches by `Classify` (STUN → endpoint
+  update, disco → `TSDisco` ping/pong handling, WireGuard → transport), the disco
+  probe of candidate endpoints, and per-peer direct-vs-DERP path selection; then
+  the `WGPeer` bridge to carry real packets.
+
 ## 2026-08-04 — Phase 5: magicsock UDP socket + inbound classifier
 - Did: Added `src/backend/tailscale/MagicSock.{h,cpp}` — the single UDP socket
   that carries all peer traffic. Bind (ephemeral or fixed port, with a 1s recv
