@@ -15,6 +15,26 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Fix: fresh connection per register/poll/map (followup bug)
+- Did: A live end-to-end run against controlplane.tailscale.com registered a node
+  (HTTP 200 + a real AuthURL) but the followup poll failed instantly with "record
+  stream ended while reading HTTP/2": the control server **closes the Noise
+  connection after each register response**, so reusing it for the followup
+  register was reading a dead stream. Reworked `ControlSession` to (re)establish a
+  fresh handshake → record stream → HTTP/2 for every control request: the
+  connection objects moved to the heap and `_Establish` tears down + rebuilds
+  them; `Connect` captures the endpoint + machine keypair so `PollAuthorized` and
+  the new public `Establish()` (called before the map long-poll) re-handshake
+  without the caller re-passing them. Wired `session.Establish()` before
+  `MapStream::Begin` in the backend.
+- Build: **green on-Haiku**; offline suite unaffected. **Live re-test**: register
+  → AuthURL as before, and the followup poll now **long-polls cleanly on a fresh
+  connection** (the server holds the request open awaiting login) instead of
+  erroring immediately — confirmed by ~35 s with no error while waiting. Full
+  authorize→map completes once the AuthURL is logged in.
+- Next: continue the data-plane polish (routes/recovery) and the live two-node
+  validation.
+
 ## 2026-08-04 — Phase 6: disco ping/pong → DERP-to-direct path upgrade
 - Did: Wired disco into the data plane so a peer starts on DERP and upgrades to a
   direct UDP path when one works. The sock reader now captures the source

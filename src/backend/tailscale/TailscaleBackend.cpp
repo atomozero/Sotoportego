@@ -909,6 +909,15 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 {
 	uint16 version = ts::kControlProtocolVersion;
 
+	// The register/poll connections are closed by the server; open a fresh one
+	// for the map long-poll.
+	if (session.Establish() != B_OK) {
+		BMessage m(kMsgTsFailed);
+		m.AddString("detail", "could not open the network-map connection");
+		self.SendMessage(&m);
+		return;
+	}
+
 	ts::MapStream map;
 	int status = 0;
 	status_t result = map.Begin(session.Http2(), fControlHost.String(), version,
