@@ -286,6 +286,12 @@ SotoportegoServer::_HandleConnect(BMessage* message)
 	// say, "/etc/shadow" -- openvpn would echo parse errors that quote the
 	// file contents into our log. So: absolute path, no .. segments, file
 	// must exist and be readable as us.
+	//
+	// Only OpenVPN and WireGuard consume a config file; Tailscale has none
+	// (it's a name + control server), so skip the path gate for it -- an
+	// empty path there is expected, not an attack.
+	bool needsConfigFile = profile.fBackendType == VPN_BACKEND_OPENVPN
+		|| profile.fBackendType == VPN_BACKEND_WIREGUARD;
 	const BString& configPath = profile.fConfigPath;
 	// Reject genuine parent-directory traversal -- a "/../" segment or a
 	// trailing "/.." -- but not an innocent filename that merely contains
@@ -298,7 +304,7 @@ SotoportegoServer::_HandleConnect(BMessage* message)
 		&& !traversal;
 	if (pathOk && access(configPath.String(), R_OK) != 0)
 		pathOk = false;
-	if (!pathOk) {
+	if (needsConfigFile && !pathOk) {
 		printf("[server] connect rejected: bad config path '%s'\n",
 			configPath.String());
 		// A VPNGate connect optimistically recorded the host before getting
@@ -326,6 +332,14 @@ SotoportegoServer::_HandleConnect(BMessage* message)
 		password = "";
 	if (username[0] != '\0' || password[0] != '\0')
 		fBackend->SetCredentials(BString(username), BString(password));
+
+	// A Tailscale pre-auth key rides in the same transient way: fold it into
+	// the profile (which is never persisted) so the backend can register non-
+	// interactively. Absent field means browser SSO, exactly as before.
+	const char* authKey = NULL;
+	if (message->FindString(kFieldAuthKey, &authKey) == B_OK && authKey != NULL
+			&& authKey[0] != '\0')
+		profile.fAuthKey = authKey;
 
 	// A connect implies the sender wants updates.
 	_HandleSubscribe(message);

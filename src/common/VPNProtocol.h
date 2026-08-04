@@ -138,6 +138,10 @@ static const char* const kFieldConnectedHost	= "soto:connected:host";
 // daemon. The GUI strips them from the message after delivery.
 static const char* const kFieldUsername			= "soto:auth:username";
 static const char* const kFieldPassword			= "soto:auth:password";
+// Transient Tailscale pre-auth key, carried the same way: the GUI loads it
+// from the keystore at Connect time and the daemon merges it into the profile
+// before handing off to the backend. Never persisted in the profile store.
+static const char* const kFieldAuthKey			= "soto:auth:authkey";
 
 // VPNProfile fields:
 static const char* const kFieldProfileName		= "soto:profile:name";

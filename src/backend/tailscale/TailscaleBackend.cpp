@@ -193,21 +193,34 @@ TailscaleBackend::MessageReceived(BMessage* message)
 
 		case kMsgTsNetmap:
 		{
-			// A MapResponse was applied. Report the netmap summary. The packet
-			// data plane (magicsock reader + tun) isn't wired yet, so this is
-			// not a full CONNECTED tunnel -- reflect that in the detail.
+			// A MapResponse was applied and the worker has attempted to bring up
+			// the data plane. Once the tun is up we're a fully connected node on
+			// the tailnet; until then we're still assembling the tunnel.
 			int32 peers = 0;
 			const char* selfip = NULL;
+			bool up = false;
 			message->FindInt32("peers", &peers);
+			message->FindBool("up", &up);
 			if (message->FindString("selfip", &selfip) == B_OK && selfip != NULL)
 				fLocalIP = selfip;	// tun bring-up happens on the worker
-			BString detail;
-			detail.SetToFormat("netmap: %d peer%s%s%s (data plane pending)",
-				(int)peers, peers == 1 ? "" : "s",
-				(selfip && *selfip) ? ", self " : "",
-				(selfip && *selfip) ? selfip : "");
-			printf("[tailscale] %s\n", detail.String());
-			_SetState(VPN_STATE_AUTHENTICATING, detail.String());
+
+			if (up) {
+				BString detail;
+				detail.SetToFormat("%s%s%d peer%s",
+					(selfip && *selfip) ? selfip : "",
+					(selfip && *selfip) ? " \xc2\xb7 " : "",
+					(int)peers, peers == 1 ? "" : "s");
+				printf("[tailscale] connected: %s\n", detail.String());
+				_SetState(VPN_STATE_CONNECTED, detail.String());
+			} else {
+				BString detail;
+				detail.SetToFormat("netmap: %d peer%s%s%s \xe2\x80\x94 bringing up "
+					"tunnel", (int)peers, peers == 1 ? "" : "s",
+					(selfip && *selfip) ? ", self " : "",
+					(selfip && *selfip) ? selfip : "");
+				printf("[tailscale] %s\n", detail.String());
+				_SetState(VPN_STATE_AUTHENTICATING, detail.String());
+			}
 			break;
 		}
 
@@ -973,6 +986,10 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 		BMessage nm(kMsgTsNetmap);
 		nm.AddInt32("peers", fSession.PeerCount());
 		nm.AddString("selfip", fSession.SelfIPv4());
+		// The tunnel is genuinely up once the tun device is open and reading;
+		// tell the looper so it can flip the session to CONNECTED rather than
+		// sitting in AUTHENTICATING forever.
+		nm.AddBool("up", fTunFd >= 0);
 		self.SendMessage(&nm);
 	}
 

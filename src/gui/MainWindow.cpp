@@ -97,6 +97,11 @@ static bool		load_stored_credentials(const char* profileName,
 static void		save_credentials(const char* profileName, const char* user,
 					const char* password);
 static void		forget_credentials(const char* profileName);
+// Tailscale pre-auth key, stored as its own keystore entry (namespaced so it
+// never collides with a profile's OpenVPN password).
+static bool		load_authkey(const char* profileName, BString& outKey);
+static void		save_authkey(const char* profileName, const char* authKey);
+static void		forget_authkey(const char* profileName);
 
 
 MainWindow::MainWindow()
@@ -659,6 +664,13 @@ MainWindow::_SendConnectWith(const char* username, const char* password)
 		connect.AddString(kFieldUsername, username);
 	if (password != NULL && password[0] != '\0')
 		connect.AddString(kFieldPassword, password);
+	// For a Tailscale profile, pull the optional pre-auth key from the keystore
+	// and pass it transiently. Non-Tailscale profiles have no such entry, so
+	// this is a no-op for them.
+	BString authKey;
+	if (selected->fBackendType == VPN_BACKEND_TAILSCALE
+			&& load_authkey(selected->fName.String(), authKey))
+		connect.AddString(kFieldAuthKey, authKey);
 	fServer.SendMessage(&connect);
 }
 
@@ -1089,9 +1101,15 @@ MainWindow::_CreateTailscaleProfile(const char* name, const char* controlURL,
 	profile.fPort = 443;
 	profile.fProtocol = "";
 	profile.fConfigPath = "";
-	// Optional pre-auth key: empty means browser SSO at Connect time.
-	if (authKey != NULL)
-		profile.fAuthKey = authKey;
+
+	// The optional pre-auth key is a secret: keep it in the keystore, never in
+	// the on-disk profile. An empty key clears any previous one (e.g. when the
+	// user replaces a profile) and leaves the browser-SSO path in place.
+	bool hasKey = authKey != NULL && *authKey != '\0';
+	if (hasKey)
+		save_authkey(name, authKey);
+	else
+		forget_authkey(name);
 
 	// Optimistically select the new profile once the server echoes the list.
 	fSelectedName = profile.fName;
@@ -1103,7 +1121,6 @@ MainWindow::_CreateTailscaleProfile(const char* name, const char* controlURL,
 	save.AddMessage(kFieldProfile, &archive);
 	fServer.SendMessage(&save);
 
-	bool hasKey = authKey != NULL && *authKey != '\0';
 	_AppendEvent(BString("Added Tailscale network '").Append(name).Append(
 		hasKey
 			? "' \xe2\x80\x94 select it and click Connect (pre-auth key set)."
@@ -1134,8 +1151,10 @@ MainWindow::_DeleteSelectedProfile()
 	fServer.SendMessage(&del);
 
 	// Drop any stored password for this profile too: leaving a stale key
-	// behind would resurface on a re-import with the same name.
+	// behind would resurface on a re-import with the same name. Same for a
+	// Tailscale pre-auth key.
 	forget_credentials(selected->fName.String());
+	forget_authkey(selected->fName.String());
 
 	fSelectedName = "";
 }
@@ -1224,6 +1243,63 @@ forget_credentials(const char* profileName)
 	BKeyStore keystore;
 	BPasswordKey existing;
 	if (keystore.GetKey(B_KEY_TYPE_PASSWORD, profileName, existing) == B_OK)
+		keystore.RemoveKey(existing);
+}
+
+
+// The Tailscale pre-auth key gets its own keystore entry under a distinct
+// identifier ("tsauth:<profile>") so it never clashes with the OpenVPN password
+// stored under the bare profile name.
+static BString
+_authKeyId(const char* profileName)
+{
+	BString id("tsauth:");
+	id << profileName;
+	return id;
+}
+
+
+static bool
+load_authkey(const char* profileName, BString& outKey)
+{
+	if (profileName == NULL || *profileName == '\0')
+		return false;
+	BKeyStore keystore;
+	BPasswordKey key;
+	if (keystore.GetKey(B_KEY_TYPE_PASSWORD, _authKeyId(profileName).String(),
+			key) != B_OK)
+		return false;
+	outKey = key.Password();
+	return outKey.Length() > 0;
+}
+
+
+static void
+save_authkey(const char* profileName, const char* authKey)
+{
+	if (profileName == NULL || *profileName == '\0' || authKey == NULL
+			|| *authKey == '\0')
+		return;
+	BKeyStore keystore;
+	BString id = _authKeyId(profileName);
+	// AddKey refuses to overwrite, so clear any prior key first.
+	BPasswordKey existing;
+	if (keystore.GetKey(B_KEY_TYPE_PASSWORD, id.String(), existing) == B_OK)
+		keystore.RemoveKey(existing);
+	BPasswordKey key(authKey, B_KEY_PURPOSE_NETWORK, id.String());
+	keystore.AddKey(key);
+}
+
+
+static void
+forget_authkey(const char* profileName)
+{
+	if (profileName == NULL || *profileName == '\0')
+		return;
+	BKeyStore keystore;
+	BPasswordKey existing;
+	if (keystore.GetKey(B_KEY_TYPE_PASSWORD, _authKeyId(profileName).String(),
+			existing) == B_OK)
 		keystore.RemoveKey(existing);
 }
 

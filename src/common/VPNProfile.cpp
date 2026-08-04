@@ -47,8 +47,9 @@ VPNProfile::Archive(BMessage* into) const
 		result = into->AddString(kFieldProfileProtocol, fProtocol);
 	if (result == B_OK)
 		result = into->AddString(kFieldProfileConfigPath, fConfigPath);
-	if (result == B_OK)
-		result = into->AddString(kFieldProfileAuthKey, fAuthKey);
+	// fAuthKey is intentionally NOT archived: the Tailscale pre-auth key is a
+	// secret and lives in the BKeyStore, not in the on-disk profile store. It
+	// reaches the backend as a transient connect-time field (kFieldAuthKey).
 
 	return result;
 }
