@@ -22,6 +22,7 @@ static const uint32 kMsgTsAuthURL		= 'tsAu';	// "url"
 static const uint32 kMsgTsAuthorized	= 'tsOk';
 static const uint32 kMsgTsFailed		= 'tsEr';	// "detail" (empty == stopped)
 static const uint32 kMsgTsNetmap		= 'tsNm';	// "peers" int32, "selfip"
+static const uint32 kMsgTsEndpoint		= 'tsEp';	// "endpoint" (public ip:port)
 
 // Default coordination server when a profile doesn't name one.
 static const char* const kDefaultControlHost = "controlplane.tailscale.com";
@@ -190,6 +191,16 @@ TailscaleBackend::MessageReceived(BMessage* message)
 				(selfip && *selfip) ? selfip : "");
 			printf("[tailscale] %s\n", detail.String());
 			_SetState(VPN_STATE_AUTHENTICATING, detail.String());
+			break;
+		}
+
+		case kMsgTsEndpoint:
+		{
+			const char* ep = NULL;
+			if (message->FindString("endpoint", &ep) == B_OK && ep != NULL) {
+				fRemoteIP = ep;	// our reflexive endpoint (shown as the summary)
+				printf("[tailscale] advertised endpoint: %s\n", ep);
+			}
 			break;
 		}
 
@@ -409,15 +420,59 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 		if (!fSession.ApplyMapResponse(msg.String(), msg.Length()))
 			continue;	// skip a malformed message, keep the stream
 
+		// Once we have a netmap (hence a DERPMap), open the data-plane UDP
+		// socket and learn our public endpoint via DERP STUN.
+		if (!fMagicSock.IsOpen())
+			_BringUpMagicSock(self);
+
 		BMessage nm(kMsgTsNetmap);
 		nm.AddInt32("peers", fSession.PeerCount());
 		nm.AddString("selfip", fSession.SelfIPv4());
 		self.SendMessage(&nm);
 	}
 
+	fMagicSock.Close();	// worker owns the socket; close it as the map loop ends
+
 	BMessage done(kMsgTsFailed);
 	done.AddString("detail", "");	// stopped
 	self.SendMessage(&done);
+}
+
+
+void
+TailscaleBackend::_BringUpMagicSock(BMessenger& self)
+{
+	if (fMagicSock.IsOpen())
+		return;
+	if (fMagicSock.Open(0) != B_OK) {
+		fprintf(stderr, "[tailscale] magicsock open failed\n");
+		return;
+	}
+	printf("[tailscale] magicsock on udp port %u\n",
+		(unsigned)fMagicSock.LocalPort());
+
+	// Pick a DERP node from the netmap to run STUN against (relays host the
+	// STUN service on udp/3478).
+	BString stunHost;
+	const std::vector<ts::DerpRegion>& regions = fSession.Netmap().DerpRegions();
+	for (size_t i = 0; i < regions.size() && stunHost.Length() == 0; i++) {
+		if (!regions[i].nodes.empty())
+			stunHost = regions[i].nodes[0].hostName;
+	}
+	if (stunHost.Length() == 0)
+		return;
+
+	BString ip;
+	uint16 port = 0;
+	if (fMagicSock.DiscoverEndpoint(stunHost.String(), 3478, ip, port) == B_OK) {
+		BString endpoint;
+		endpoint.SetToFormat("%s:%u", ip.String(), (unsigned)port);
+		printf("[tailscale] public endpoint %s (via %s)\n",
+			endpoint.String(), stunHost.String());
+		BMessage m(kMsgTsEndpoint);
+		m.AddString("endpoint", endpoint.String());
+		self.SendMessage(&m);
+	}
 }
 
 

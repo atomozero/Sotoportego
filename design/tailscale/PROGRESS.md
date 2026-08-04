@@ -15,6 +15,23 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 4/5: magicsock bring-up + STUN endpoint in the backend
+- Did: `TailscaleBackend::_BringUpMagicSock` — once the map loop has a netmap (so
+  a DERPMap), the worker opens the magicsock UDP socket and runs a STUN sweep
+  against the first DERP node's host (relays serve STUN on udp/3478) to learn our
+  public endpoint, posting it to the looper (`kMsgTsEndpoint` → `RemoteIP` +
+  log). The socket is worker-owned and closed when the map loop ends. Ties the
+  live-verified `MagicSock`/`TSStun` into the real session.
+- Build: **green on-Haiku**; offline suite still 34/34. The magicsock open + STUN
+  discovery core is already live-proven (it found this box's public endpoint via
+  a public STUN server); here it runs against a DERP node from the actual netmap,
+  which needs an authorized session to reach.
+- Next: the last mile — the tun and magicsock **reader threads** that actually
+  move packets (tun read → `FindByAllowedIP` → lazy `WGPeer` handshake →
+  `Encapsulate` → send direct via `MagicSock::SendTo` or relay via `DerpClient`;
+  socket read → `Classify` → disco/`WGPeer::Decapsulate` → tun write) — developed
+  and validated against a live two-node tailnet / Headscale (STATUS.md runbook).
+
 ## 2026-08-04 — Phase 3: tun bring-up with the tailnet address
 - Did: `TailscaleBackend::_BringUpTun` — the first on-device data-plane action.
   When the map loop first reports our self address, the backend probes a free

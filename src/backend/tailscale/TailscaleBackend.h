@@ -12,6 +12,7 @@
 #include "VPNBackend.h"
 #include "VPNStats.h"
 
+#include "MagicSock.h"
 #include "TSIdentity.h"
 #include "TSSessionState.h"
 
@@ -73,6 +74,9 @@ private:
 	// the first netmap gives us a self address; _TeardownTun removes it.
 			void				_BringUpTun(const char* selfIPv4);
 			void				_TeardownTun();
+	// Open the magicsock UDP socket and learn our public endpoint via a DERP
+	// STUN server from the netmap. Runs on the worker thread (STUN blocks).
+			void				_BringUpMagicSock(BMessenger& self);
 
 			VPNState			fState;
 			VPNStats			fStats;
@@ -99,6 +103,10 @@ private:
 			// Haiku tun slot once brought up: "tun/N" and "/dev/tun/N".
 			BString				fTunInterface;
 			BString				fTunNode;
+
+			// The magicsock UDP socket (worker-owned) and our discovered public
+			// endpoint.
+			ts::MagicSock		fMagicSock;
 };
 
 
