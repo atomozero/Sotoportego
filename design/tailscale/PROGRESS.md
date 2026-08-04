@@ -15,6 +15,24 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 3/5 bridge: TSPeerSet (netmap → data-plane peers)
+- Did: Added `src/backend/tailscale/TSPeerSet.{h,cpp}` — the live peer set driven
+  by the network map. `Update(TSNetmap)` diffs each MapResponse into a set of
+  `ManagedPeer`s keyed by node-key hex: new peers are added (decoding the 32-byte
+  node key into their `WGPeer`), departed peers removed, and existing peers'
+  reachability (endpoints, AllowedIPs, DERP-home, online, hostname) refreshed
+  in place while keeping their `WGPeer` and any negotiated transport keys. This
+  is the glue between the parsed netmap (Phase 3) and the per-peer transport
+  (`WGPeer`).
+- Build: **green on-Haiku.** Unit test across two successive netmaps: round 1 adds
+  peers A+B; round 2 (A with a new endpoint/DERP/offline, B gone, C new) reports
+  +1/−1/~1, leaves A refreshed in place (endpoint `9.9.9.9:55555`, DERP 5,
+  offline), drops B, adds C, and decodes C's 32-byte WireGuard node key.
+- Next: the magicsock reader thread that ties it together — bring up a `tun/N`
+  with `TSNetmap::SelfIPv4()`, run the per-peer Noise IKpsk2 handshake to fill
+  each `WGPeer`'s transport keys, then forward tun↔peer packets choosing the send
+  path (direct UDP once a disco pong lands, else via the `DerpClient`).
+
 ## 2026-08-04 — Phase 3/5 bridge: WGPeer transport unit (round-trip verified)
 - Did: Added `src/backend/tailscale/WGPeer.{h,cpp}` — one WireGuard peer's
   data-plane transport, factored out of WireGuardBackend so the Tailscale backend

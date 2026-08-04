@@ -1,0 +1,64 @@
+/*
+ * Copyright 2026 atomozero. All rights reserved.
+ * Distributed under the terms of the MIT License.
+ */
+#ifndef TS_PEER_SET_H
+#define TS_PEER_SET_H
+
+
+#include <String.h>
+#include <SupportDefs.h>
+
+#include <vector>
+
+#include "TSNetmap.h"
+#include "WGPeer.h"
+
+
+// The live set of tailnet peers, driven by the network map. Each MapResponse is
+// diffed into this set: new peers are added, departed peers removed, and the
+// reachability of existing peers (endpoints, AllowedIPs, DERP-home) refreshed --
+// so the data plane always mirrors what control last told us. Each peer carries
+// a WGPeer (its WireGuard transport, keyed once a handshake completes) plus the
+// routing/probing metadata magicsock needs.
+namespace ts {
+
+struct ManagedPeer {
+	BString					nodeKeyHex;		// 64-hex, the map key
+	BString					hostname;
+	bool					online;
+	int						derpRegion;		// home DERP region id, -1 if none
+	std::vector<BString>	allowedIPs;		// CIDRs routed to this peer
+	std::vector<BString>	endpoints;		// direct-path candidates
+	WGPeer					wg;				// per-peer WireGuard transport
+
+							ManagedPeer() : online(false), derpRegion(-1) {}
+};
+
+
+class TSPeerSet {
+public:
+							TSPeerSet();
+
+			// Reconcile the peer set against `nm`. Optional out-params receive
+			// the number of peers added / removed / updated this round.
+			void			Update(const TSNetmap& nm, int* outAdded = NULL,
+								int* outRemoved = NULL, int* outUpdated = NULL);
+
+			size_t			Count() const { return fPeers.size(); }
+			const std::vector<ManagedPeer>&	Peers() const { return fPeers; }
+
+			// Find a peer by its node key hex (NULL if absent). The pointer is
+			// valid only until the next Update().
+			ManagedPeer*	Find(const char* nodeKeyHex);
+
+private:
+			int				_IndexOf(const BString& hex) const;
+
+			std::vector<ManagedPeer>	fPeers;
+};
+
+}	// namespace ts
+
+
+#endif	// TS_PEER_SET_H

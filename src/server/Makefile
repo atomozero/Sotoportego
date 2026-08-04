@@ -48,6 +48,7 @@ SRCS = \
 	../backend/tailscale/TSDerp.cpp \
 	../backend/tailscale/MagicSock.cpp \
 	../backend/tailscale/WGPeer.cpp \
+	../backend/tailscale/TSPeerSet.cpp \
 	../backend/tailscale/TSTls.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/WireGuardConfigParser.cpp \
