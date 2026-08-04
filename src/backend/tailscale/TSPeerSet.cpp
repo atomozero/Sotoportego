@@ -88,6 +88,20 @@ TSPeerSet::FindBySenderIndex(uint32 index)
 
 
 ManagedPeer*
+TSPeerSet::FindByDiscoKey(const char* discoKeyHex)
+{
+	if (discoKeyHex == NULL)
+		return NULL;
+	BString hex(discoKeyHex);
+	for (size_t i = 0; i < fPeers.size(); i++) {
+		if (fPeers[i].discoKey == hex && fPeers[i].discoKey.Length() > 0)
+			return &fPeers[i];
+	}
+	return NULL;
+}
+
+
+ManagedPeer*
 TSPeerSet::FindByAllowedIP(const char* ipv4)
 {
 	uint32 dst;
@@ -135,6 +149,7 @@ TSPeerSet::Update(const TSNetmap& nm, int* outAdded, int* outRemoved,
 			// Existing peer: refresh reachability/metadata (keep its WGPeer +
 			// any transport keys already negotiated).
 			ManagedPeer& mp = fPeers[idx];
+			mp.discoKey = np.discoKey;
 			mp.hostname = np.hostname;
 			mp.online = np.online;
 			mp.derpRegion = np.derpRegion;
@@ -148,6 +163,7 @@ TSPeerSet::Update(const TSNetmap& nm, int* outAdded, int* outRemoved,
 			// New peer.
 			ManagedPeer mp;
 			mp.nodeKeyHex = np.nodeKey;
+			mp.discoKey = np.discoKey;
 			mp.hostname = np.hostname;
 			mp.online = np.online;
 			mp.derpRegion = np.derpRegion;

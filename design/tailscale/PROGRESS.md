@@ -15,6 +15,24 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 6: disco ping/pong → DERP-to-direct path upgrade
+- Did: Wired disco into the data plane so a peer starts on DERP and upgrades to a
+  direct UDP path when one works. The sock reader now captures the source
+  sockaddr and routes `PKT_DISCO` datagrams to `_HandleDiscoPacket`: a disco PING
+  is answered with a PONG (echoing the txid + the observed source), and a PONG
+  makes `PeerPath::UpgradeToDirect(<address it arrived from>)` so subsequent sends
+  go direct. `_SendToPeer` calls `_SendDiscoPing` (throttled ~0.5 Hz) for any peer
+  still on DERP, sealing a Ping (our node key) to the peer's disco key and
+  spraying its candidate endpoints. Added `ManagedPeer.discoKey` (from the
+  netmap), `TSPeerSet::FindByDiscoKey`, and a per-peer disco-ping throttle.
+- Build: **green on-Haiku** (daemon ~417 KB); offline suite 34/34. Built on the
+  unit-verified `TSDisco` seal/open; the actual hole-punch upgrade needs a live
+  two-node tailnet to observe.
+- Next: install accepted AllowedIPs routes (`WireGuardRoutes`/`TunDevice`), bind
+  MagicDNS on 100.100.100.100:53 with upstream forwarding + resolv.conf
+  save/restore, and `RecoverIfCrashed` rollback — then the live bring-up test
+  against Headscale.
+
 ## 2026-08-04 — Phase 5: DERP relay path wired into the data plane
 - Did: Added the DERP fallback path so a peer is reachable from t=0 even without a
   direct route. On the first netmap the worker also connects a `DerpClient` to the

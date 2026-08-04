@@ -20,9 +20,11 @@
 
 #include "TSControl.h"			// kControlProtocolVersion
 #include "TSControlSession.h"
+#include "TSDisco.h"
 #include "TSMap.h"
 #include "TSRegister.h"
 #include "TunDevice.h"
+#include "WireGuardCrypto.h"		// RandomBytes
 
 
 // Private messages the control worker posts back to the looper.
@@ -330,6 +332,101 @@ TailscaleBackend::_SendToPeer(ts::ManagedPeer* peer, const uint8* packet,
 	size_t n = peer->wg.Encapsulate(packet, len, out);
 	if (n > 0)
 		_SendPeerBytes(peer, out, n);
+
+	// While relaying via DERP, probe the peer's endpoints so a direct path can
+	// take over.
+	if (peer->path.Mode() != ts::PATH_DIRECT)
+		_SendDiscoPing(peer);
+}
+
+
+void
+TailscaleBackend::_SendDiscoPing(ts::ManagedPeer* peer)
+{
+	if (peer->discoKey.Length() == 0 || peer->endpoints.empty())
+		return;
+	bigtime_t now = system_time();
+	if (now - peer->lastDiscoPing < 2000000)	// throttle to ~0.5 Hz
+		return;
+	peer->lastDiscoPing = now;
+
+	uint8 peerDisco[32];
+	if (!ts::TSIdentity::FromHex(peer->discoKey.String(), peerDisco, 32))
+		return;
+
+	// A disco ping carries a random txid + our node key; a returning pong
+	// arrives on whichever endpoint worked.
+	uint8 txid[12];
+	wg::RandomBytes(txid, 12);
+	uint8 ping[64];
+	size_t pl = ts::EncodePing(ping, txid, fIdentity.NodePublic());
+	uint8 pkt[256];
+	ssize_t pn = ts::DiscoSeal(pkt, sizeof(pkt), fIdentity.DiscoPublic(),
+		fIdentity.DiscoPrivate(), peerDisco, ping, pl);
+	if (pn < 0)
+		return;
+
+	// Send to every candidate endpoint.
+	for (size_t i = 0; i < peer->endpoints.size(); i++) {
+		int colon = peer->endpoints[i].FindLast(':');
+		if (colon < 0)
+			continue;
+		BString host(peer->endpoints[i]);
+		host.Truncate(colon);
+		int port = atoi(peer->endpoints[i].String() + colon + 1);
+		struct sockaddr_in to;
+		memset(&to, 0, sizeof(to));
+		to.sin_family = AF_INET;
+		to.sin_port = htons((uint16)port);
+		if (inet_pton(AF_INET, host.String(), &to.sin_addr) == 1)
+			fMagicSock.SendTo((struct sockaddr*)&to, sizeof(to), pkt, pn);
+	}
+}
+
+
+void
+TailscaleBackend::_HandleDiscoPacket(const uint8* buf, size_t len,
+	const struct sockaddr_in& from)
+{
+	uint8 sender[32];
+	uint8 payload[128];
+	ssize_t pl = ts::DiscoOpen(buf, len, fIdentity.DiscoPrivate(), sender,
+		payload, sizeof(payload));
+	if (pl < 0)
+		return;
+
+	char ip[16];
+	inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
+	uint16 port = ntohs(from.sin_port);
+	uint8 type = ts::DiscoMessageType(payload, (size_t)pl);
+
+	if (type == ts::DISCO_PING) {
+		// Answer with a pong echoing the txid and the source we observed, so the
+		// pinger learns this endpoint reaches us.
+		ts::DiscoPing dp;
+		if (!ts::DecodePing(payload, (size_t)pl, dp))
+			return;
+		uint8 pong[64];
+		size_t pn = ts::EncodePong(pong, dp.txid, ip, port);
+		uint8 pkt[256];
+		ssize_t sn = ts::DiscoSeal(pkt, sizeof(pkt), fIdentity.DiscoPublic(),
+			fIdentity.DiscoPrivate(), sender, pong, pn);
+		if (sn > 0)
+			fMagicSock.SendTo((struct sockaddr*)&from, sizeof(from), pkt, sn);
+	} else if (type == ts::DISCO_PONG) {
+		// A pong means the address it arrived from is a working direct path.
+		BString senderHex = ts::TSIdentity::ToHex(sender, 32);
+		BString endpoint;
+		endpoint.SetToFormat("%s:%u", ip, (unsigned)port);
+		fSessionLock.Lock();
+		ts::ManagedPeer* p = fSession.Peers().FindByDiscoKey(senderHex.String());
+		if (p != NULL) {
+			p->path.UpgradeToDirect(endpoint.String(), system_time());
+			printf("[tailscale] direct path to %s via %s\n",
+				p->hostname.String(), endpoint.String());
+		}
+		fSessionLock.Unlock();
+	}
 }
 
 
@@ -522,13 +619,21 @@ TailscaleBackend::_RunSockReader()
 {
 	uint8 buf[2048];
 	while (!fStopRequested) {
-		ssize_t n = fMagicSock.Recv(buf, sizeof(buf), NULL, NULL);
+		struct sockaddr_storage ss;
+		socklen_t sl = sizeof(ss);
+		ssize_t n = fMagicSock.Recv(buf, sizeof(buf), &ss, &sl);
 		if (n <= 0)
 			continue;	// timeout / interrupted
 
-		if (ts::MagicSock::Classify(buf, (size_t)n) != ts::PKT_WIREGUARD)
-			continue;	// disco/STUN handling lands in a later pass
-		_HandleWireGuardPacket(buf, (size_t)n);
+		ts::SockPacketKind kind = ts::MagicSock::Classify(buf, (size_t)n);
+		if (kind == ts::PKT_WIREGUARD) {
+			_HandleWireGuardPacket(buf, (size_t)n);
+		} else if (kind == ts::PKT_DISCO && ss.ss_family == AF_INET) {
+			_HandleDiscoPacket(buf, (size_t)n,
+				*(const struct sockaddr_in*)&ss);
+		}
+		// PKT_STUN here would be a late STUN reply; endpoint discovery already
+		// ran during bring-up.
 	}
 	return 0;
 }

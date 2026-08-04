@@ -26,6 +26,7 @@ namespace ts {
 
 struct ManagedPeer {
 	BString					nodeKeyHex;		// 64-hex, the map key
+	BString					discoKey;		// disco public key hex (may be empty)
 	BString					hostname;
 	bool					online;
 	int						derpRegion;		// home DERP region id, -1 if none
@@ -34,9 +35,11 @@ struct ManagedPeer {
 	WGPeer					wg;				// per-peer WireGuard transport
 	PeerPath				path;			// DERP-vs-direct send-path state
 	bigtime_t				lastHandshake;	// system_time of our last initiation
+	bigtime_t				lastDiscoPing;	// system_time of our last disco ping
 
 							ManagedPeer()
-								: online(false), derpRegion(-1), lastHandshake(0) {}
+								: online(false), derpRegion(-1),
+								  lastHandshake(0), lastDiscoPing(0) {}
 };
 
 
@@ -66,6 +69,10 @@ public:
 			// (the index we advertised, echoed as the receiver index in the
 			// peer's packets to us) equals `index`. NULL / index 0 matches none.
 			ManagedPeer*	FindBySenderIndex(uint32 index);
+
+			// Find a peer by its disco public key hex (for routing disco pongs
+			// back to the peer that a probe confirmed reachable). NULL if none.
+			ManagedPeer*	FindByDiscoKey(const char* discoKeyHex);
 
 private:
 			int				_IndexOf(const BString& hex) const;

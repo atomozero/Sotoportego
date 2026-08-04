@@ -99,6 +99,13 @@ private:
 	// response completes the session; a type-4 data message decrypts to the tun.
 			void				_HandleWireGuardPacket(const uint8* buf,
 									size_t len);
+	// Handle an inbound disco packet: answer a ping with a pong; on a pong,
+	// upgrade the peer's path to the direct address it arrived from.
+			void				_HandleDiscoPacket(const uint8* buf, size_t len,
+									const struct sockaddr_in& from);
+	// Probe a peer's candidate endpoints with a disco ping (throttled), so a
+	// returning pong can upgrade its path off DERP. Caller holds fSessionLock.
+			void				_SendDiscoPing(ts::ManagedPeer* peer);
 	// Encapsulate + send `packet` to `peer` on its current path (direct UDP for
 	// now); lazily initiates a handshake if the peer has no transport keys yet.
 	// Caller holds fSessionLock.
