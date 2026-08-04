@@ -9,7 +9,9 @@
 #include <Bitmap.h>
 #include <Button.h>
 #include <Font.h>
+#include <GroupLayout.h>
 #include <IconUtils.h>
+#include <SpaceLayoutItem.h>
 
 #include "sotoportego_icon_data.h"
 
@@ -125,39 +127,22 @@ HeaderView::SetActionButton(BButton* button)
 	if (button == NULL || button == fActionButton)
 		return;
 	fActionButton = button;
-	AddChild(button);
-	_LayoutActionButton();
-}
 
+	// Host the button through a real BLayout rather than a hand-placed child:
+	// on a B_SUPPORTS_LAYOUT view every layout pass resets a manually-moved
+	// child back to a zero frame (which is why it was invisible). A glue item
+	// on the left pushes the button hard against the right edge; the explicit
+	// alignment keeps it centred vertically in the 64px banner. A minimum
+	// width keeps it from jumping as the label toggles Connect/Disconnect.
+	button->SetExplicitAlignment(
+		BAlignment(B_ALIGN_RIGHT, B_ALIGN_VERTICAL_CENTER));
+	button->SetExplicitMinSize(BSize(kButtonMinWidth, B_SIZE_UNSET));
 
-void
-HeaderView::_LayoutActionButton()
-{
-	if (fActionButton == NULL)
-		return;
-
-	// Right-aligned, vertically centred in the banner. The label toggles
-	// between "Connect" and "Disconnect", so size to a width floor so the
-	// button doesn't jump as the state changes.
-	BSize preferred = fActionButton->PreferredSize();
-	BRect bounds = Bounds();
-	float width = preferred.width;
-	if (width < kButtonMinWidth)
-		width = kButtonMinWidth;
-	float height = preferred.height;
-	float left = bounds.right - kButtonMargin - width;
-	float top = floorf((bounds.Height() - height) / 2.0f);
-
-	fActionButton->MoveTo(left, top);
-	fActionButton->ResizeTo(width, height);
-}
-
-
-void
-HeaderView::FrameResized(float width, float height)
-{
-	BView::FrameResized(width, height);
-	_LayoutActionButton();
+	BGroupLayout* layout = new BGroupLayout(B_HORIZONTAL);
+	SetLayout(layout);
+	layout->SetInsets(kTextX, 0, kButtonMargin, 0);
+	layout->AddItem(BSpaceLayoutItem::CreateGlue());
+	layout->AddView(button);
 }
 
 

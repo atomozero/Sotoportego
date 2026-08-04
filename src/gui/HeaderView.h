@@ -40,7 +40,6 @@ public:
 			void				SetActionButton(BButton* button);
 
 	virtual	void				Draw(BRect updateRect);
-	virtual	void				FrameResized(float width, float height);
 	virtual	void				MouseDown(BPoint where);
 	virtual	BSize				MinSize();
 	virtual	BSize				MaxSize();
@@ -61,7 +60,6 @@ public:
 private:
 			void				_DrawLogoTile(BRect rect);
 			void				_DrawStatusDot(BRect iconRect);
-			void				_LayoutActionButton();
 
 			VPNState			fState;
 			BString				fSubtitle;
