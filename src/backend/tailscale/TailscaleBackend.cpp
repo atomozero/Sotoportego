@@ -806,7 +806,10 @@ TailscaleBackend::_TeardownTun()
 {
 	if (fTunInterface.Length() == 0)
 		return;
-	const char* argv[] = { "ifconfig", fTunInterface.String(), "delete", NULL };
+	// Haiku's ifconfig removes an interface with "--delete <iface>", not
+	// "<iface> delete" (which just prints a usage error).
+	const char* argv[] = { "ifconfig", "--delete", fTunInterface.String(),
+		NULL };
 	TunDevice::RunIfconfig(argv, true);
 	fTunInterface = "";
 	fTunNode = "";
@@ -954,6 +957,8 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 		status_t r = map.ReadMessage(msg);
 		if (r == B_ENTRY_NOT_FOUND)
 			break;	// clean end of stream
+		if (r == B_WOULD_BLOCK)
+			continue;	// quiet period between keepalives -- keep polling
 		if (r != B_OK) {
 			if (fStopRequested)
 				break;

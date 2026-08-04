@@ -62,6 +62,8 @@ Http2Conn::_Fill(size_t need)
 		}
 
 		ssize_t n = fConn->ReadRecord(fBuf + fBufLen, sizeof(fBuf) - fBufLen);
+		if (n == -2)
+			return B_WOULD_BLOCK;	// no full record yet -- retryable long-poll
 		if (n <= 0) {
 			fLastError = "record stream ended while reading HTTP/2";
 			return B_IO_ERROR;
@@ -118,6 +120,8 @@ Http2Conn::ReadFrame(uint8* outType, uint8* outFlags, uint32* outStreamId,
 	uint8* payload, size_t payloadCap, size_t* outLen)
 {
 	uint8 hdr[kH2FrameHeaderLen];
+	// A would-block here is safe to propagate: no frame bytes were consumed, so
+	// the long-poll caller can retry cleanly once more data arrives.
 	status_t result = _ReadRaw(hdr, kH2FrameHeaderLen);
 	if (result != B_OK)
 		return result;
@@ -134,6 +138,11 @@ Http2Conn::ReadFrame(uint8* outType, uint8* outFlags, uint32* outStreamId,
 	}
 	if (len > 0) {
 		result = _ReadRaw(payload, len);
+		// The frame header is already consumed, so we're committed to this
+		// frame -- a would-block mid-frame can't be retried without desyncing
+		// the stream, so surface it as a hard error instead.
+		if (result == B_WOULD_BLOCK)
+			result = B_IO_ERROR;
 		if (result != B_OK)
 			return result;
 	}

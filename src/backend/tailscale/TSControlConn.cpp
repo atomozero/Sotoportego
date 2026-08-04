@@ -188,6 +188,8 @@ ControlConn::ReadRecord(uint8* buf, size_t cap)
 	status_t result = _ReadFull(header, kRecordHeaderLen);
 	if (result == B_ENTRY_NOT_FOUND)
 		return 0;	// clean EOF at a record boundary
+	if (result == B_WOULD_BLOCK)
+		return -2;	// receive timeout at a record boundary -- caller may retry
 	if (result != B_OK)
 		return -1;
 
@@ -229,6 +231,11 @@ ControlConn::_ReadFull(uint8* buf, size_t len)
 
 	while (got < len) {
 		ssize_t n = fTls->Read(buf + got, len - got);
+		if (n == -2) {
+			// Receive timeout. Only retryable at a record boundary (nothing
+			// read yet); mid-record it means a stalled peer, which is an error.
+			return got == 0 ? B_WOULD_BLOCK : B_IO_ERROR;
+		}
 		if (n == 0)
 			return got == 0 ? B_ENTRY_NOT_FOUND : B_IO_ERROR;
 		if (n < 0)

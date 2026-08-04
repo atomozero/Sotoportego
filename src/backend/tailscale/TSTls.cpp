@@ -164,15 +164,26 @@ TlsClient::Read(void* buf, size_t len)
 	if (n > 0)
 		return n;
 
-	// Distinguish a clean shutdown (return 0) from a real error (-1).
+	// Distinguish a clean shutdown (return 0) from a real error (-1) and from a
+	// receive timeout (-2). The SO_RCVTIMEO on the socket makes a quiet-but-
+	// alive stream (e.g. the map long-poll between keepalives) surface here;
+	// callers that long-poll retry on -2 instead of tearing the session down.
 	int err = SSL_get_error((SSL*)fSsl, n);
 	if (err == SSL_ERROR_ZERO_RETURN)
 		return 0;
-	// A transport-level EOF (peer closed after sending, common with
-	// Connection: close) surfaces as SSL_ERROR_SYSCALL with errno 0; treat it
-	// as EOF rather than an error so read-to-end works.
-	if (err == SSL_ERROR_SYSCALL && errno == 0)
-		return 0;
+	// SO_RCVTIMEO expiry shows up as WANT_READ (OpenSSL saw EAGAIN) or as
+	// SSL_ERROR_SYSCALL with errno EAGAIN/EWOULDBLOCK/ETIMEDOUT.
+	if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)
+		return -2;
+	if (err == SSL_ERROR_SYSCALL) {
+		// A transport-level EOF (peer closed after sending, common with
+		// Connection: close) surfaces as SSL_ERROR_SYSCALL with errno 0; treat
+		// it as EOF rather than an error so read-to-end works.
+		if (errno == 0)
+			return 0;
+		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT)
+			return -2;
+	}
 	_SetError("SSL_read");
 	return -1;
 }
