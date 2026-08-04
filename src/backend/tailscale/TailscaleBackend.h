@@ -6,6 +6,7 @@
 #define TAILSCALE_BACKEND_H
 
 
+#include <Locker.h>
 #include <OS.h>
 #include <String.h>
 
@@ -78,6 +79,22 @@ private:
 	// STUN server from the netmap. Runs on the worker thread (STUN blocks).
 			void				_BringUpMagicSock(BMessenger& self);
 
+	// The packet data plane: two reader threads move IP packets between the tun
+	// device and the peers over magicsock (WireGuard type-4), lazily running a
+	// per-peer handshake on first traffic and choosing the send path. Access to
+	// the peer set is guarded by fSessionLock (the map worker mutates it).
+			void				_StartDataPlane();
+			void				_StopDataPlane();
+	static	int32				_TunReaderEntry(void* self);
+	static	int32				_SockReaderEntry(void* self);
+			int32				_RunTunReader();
+			int32				_RunSockReader();
+	// Encapsulate + send `packet` to `peer` on its current path (direct UDP for
+	// now); lazily initiates a handshake if the peer has no transport keys yet.
+	// Caller holds fSessionLock.
+			void				_SendToPeer(ts::ManagedPeer* peer,
+									const uint8* packet, size_t len);
+
 			VPNState			fState;
 			VPNStats			fStats;
 			BString				fLocalIP;	// our 100.x tailnet address
@@ -107,6 +124,13 @@ private:
 			// The magicsock UDP socket (worker-owned) and our discovered public
 			// endpoint.
 			ts::MagicSock		fMagicSock;
+
+			// Data-plane: the tun fd and the two reader threads, plus a lock
+			// guarding fSession against the concurrent map worker.
+			int					fTunFd;			// /dev/tun/N, -1 when none
+			thread_id			fTunReader;		// -1 when none
+			thread_id			fSockReader;	// -1 when none
+			BLocker				fSessionLock;
 };
 
 

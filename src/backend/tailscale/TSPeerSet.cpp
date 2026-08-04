@@ -75,6 +75,19 @@ parse_cidr(const BString& cidr, uint32& network)
 
 
 ManagedPeer*
+TSPeerSet::FindBySenderIndex(uint32 index)
+{
+	if (index == 0)
+		return NULL;
+	for (size_t i = 0; i < fPeers.size(); i++) {
+		if (fPeers[i].wg.SenderIndex() == index)
+			return &fPeers[i];
+	}
+	return NULL;
+}
+
+
+ManagedPeer*
 TSPeerSet::FindByAllowedIP(const char* ipv4)
 {
 	uint32 dst;

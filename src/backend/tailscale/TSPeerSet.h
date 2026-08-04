@@ -33,8 +33,10 @@ struct ManagedPeer {
 	std::vector<BString>	endpoints;		// direct-path candidates
 	WGPeer					wg;				// per-peer WireGuard transport
 	PeerPath				path;			// DERP-vs-direct send-path state
+	bigtime_t				lastHandshake;	// system_time of our last initiation
 
-							ManagedPeer() : online(false), derpRegion(-1) {}
+							ManagedPeer()
+								: online(false), derpRegion(-1), lastHandshake(0) {}
 };
 
 
@@ -59,6 +61,11 @@ public:
 			// (the most specific route wins). NULL if no peer claims it. This is
 			// the tun→peer lookup the data-plane reader makes.
 			ManagedPeer*	FindByAllowedIP(const char* ipv4);
+
+			// Inbound WireGuard demux: find the peer whose WGPeer sender index
+			// (the index we advertised, echoed as the receiver index in the
+			// peer's packets to us) equals `index`. NULL / index 0 matches none.
+			ManagedPeer*	FindBySenderIndex(uint32 index);
 
 private:
 			int				_IndexOf(const BString& hex) const;

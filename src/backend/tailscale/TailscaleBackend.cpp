@@ -4,7 +4,15 @@
  */
 #include "TailscaleBackend.h"
 
+#include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include <Messenger.h>
 
@@ -39,7 +47,11 @@ TailscaleBackend::TailscaleBackend()
 	fHostname(""),
 	fAuthKey(""),
 	fWorker(-1),
-	fStopRequested(false)
+	fStopRequested(false),
+	fTunFd(-1),
+	fTunReader(-1),
+	fSockReader(-1),
+	fSessionLock("ts session")
 {
 }
 
@@ -47,6 +59,7 @@ TailscaleBackend::TailscaleBackend()
 TailscaleBackend::~TailscaleBackend()
 {
 	_StopWorker();
+	_StopDataPlane();
 	_TeardownTun();
 }
 
@@ -177,13 +190,8 @@ TailscaleBackend::MessageReceived(BMessage* message)
 			int32 peers = 0;
 			const char* selfip = NULL;
 			message->FindInt32("peers", &peers);
-			if (message->FindString("selfip", &selfip) == B_OK && selfip != NULL) {
-				fLocalIP = selfip;
-				// Bring up the tun interface with our tailnet address the first
-				// time we learn it.
-				if (fTunInterface.Length() == 0 && *selfip != '\0')
-					_BringUpTun(selfip);
-			}
+			if (message->FindString("selfip", &selfip) == B_OK && selfip != NULL)
+				fLocalIP = selfip;	// tun bring-up happens on the worker
 			BString detail;
 			detail.SetToFormat("netmap: %d peer%s%s%s (data plane pending)",
 				(int)peers, peers == 1 ? "" : "s",
@@ -207,6 +215,7 @@ TailscaleBackend::MessageReceived(BMessage* message)
 		case kMsgTsFailed:
 		{
 			fWorker = -1;
+			_StopDataPlane();
 			_TeardownTun();
 			const char* detail = NULL;
 			if (message->FindString("detail", &detail) != B_OK)
@@ -236,6 +245,206 @@ TailscaleBackend::_StartWorker()
 		return;
 	}
 	resume_thread(fWorker);
+}
+
+
+static uint32
+le32(const uint8* p)
+{
+	return (uint32)p[0] | ((uint32)p[1] << 8) | ((uint32)p[2] << 16)
+		| ((uint32)p[3] << 24);
+}
+
+
+// Resolve a peer's current send endpoint ("ip:port") into a sockaddr_in: the
+// disco-upgraded direct path if we have one, else its first advertised
+// endpoint. Returns false if the peer has no usable endpoint yet.
+static bool
+peer_sockaddr(ts::ManagedPeer* peer, struct sockaddr_in& out)
+{
+	BString ep;
+	if (peer->path.Mode() == ts::PATH_DIRECT
+			&& peer->path.DirectEndpoint().Length() > 0)
+		ep = peer->path.DirectEndpoint();
+	else if (!peer->endpoints.empty())
+		ep = peer->endpoints[0];
+	if (ep.Length() == 0)
+		return false;
+
+	int colon = ep.FindLast(':');
+	if (colon < 0)
+		return false;
+	BString host(ep);
+	host.Truncate(colon);
+	int port = atoi(ep.String() + colon + 1);
+	if (port <= 0)
+		return false;
+
+	memset(&out, 0, sizeof(out));
+	out.sin_family = AF_INET;
+	out.sin_port = htons((uint16)port);
+	if (inet_pton(AF_INET, host.String(), &out.sin_addr) != 1)
+		return false;	// IPv6 endpoints not handled on the underlay here
+	return true;
+}
+
+
+void
+TailscaleBackend::_SendToPeer(ts::ManagedPeer* peer, const uint8* packet,
+	size_t len)
+{
+	struct sockaddr_in to;
+	if (!peer_sockaddr(peer, to))
+		return;	// no path yet (DERP relay path is a further step)
+
+	if (!peer->wg.HasKeys()) {
+		// Lazily start a WireGuard handshake, throttled so a burst of packets
+		// doesn't flood initiations. The response arrives on the sock reader.
+		bigtime_t now = system_time();
+		if (now - peer->lastHandshake > 5000000) {
+			uint8 init[148];
+			if (peer->wg.BuildInitiation(fIdentity.NodePrivate(),
+					peer->wg.NodeKey(), init) == 148) {
+				peer->lastHandshake = now;
+				fMagicSock.SendTo((struct sockaddr*)&to, sizeof(to), init, 148);
+			}
+		}
+		return;	// drop this data packet until the session is up
+	}
+
+	uint8 out[2048];
+	size_t n = peer->wg.Encapsulate(packet, len, out);
+	if (n > 0)
+		fMagicSock.SendTo((struct sockaddr*)&to, sizeof(to), out, n);
+}
+
+
+void
+TailscaleBackend::_StartDataPlane()
+{
+	if (fTunFd >= 0)
+		return;
+	fTunFd = open(fTunNode.String(), O_RDWR | O_NONBLOCK);
+	if (fTunFd < 0) {
+		fprintf(stderr, "[tailscale] could not open %s\n", fTunNode.String());
+		return;
+	}
+	fTunReader = spawn_thread(_TunReaderEntry, "tailscale-tun",
+		B_NORMAL_PRIORITY, this);
+	fSockReader = spawn_thread(_SockReaderEntry, "tailscale-magicsock",
+		B_NORMAL_PRIORITY, this);
+	if (fTunReader >= 0)
+		resume_thread(fTunReader);
+	if (fSockReader >= 0)
+		resume_thread(fSockReader);
+	printf("[tailscale] data plane started (tun %s)\n", fTunInterface.String());
+}
+
+
+void
+TailscaleBackend::_StopDataPlane()
+{
+	fStopRequested = true;
+	// Closing the socket/tun unblocks the readers; they also poll the flag.
+	if (fTunReader >= 0) {
+		status_t ignored;
+		wait_for_thread(fTunReader, &ignored);
+		fTunReader = -1;
+	}
+	if (fSockReader >= 0) {
+		status_t ignored;
+		wait_for_thread(fSockReader, &ignored);
+		fSockReader = -1;
+	}
+	if (fTunFd >= 0) {
+		close(fTunFd);
+		fTunFd = -1;
+	}
+}
+
+
+int32
+TailscaleBackend::_TunReaderEntry(void* self)
+{
+	return ((TailscaleBackend*)self)->_RunTunReader();
+}
+
+
+int32
+TailscaleBackend::_SockReaderEntry(void* self)
+{
+	return ((TailscaleBackend*)self)->_RunSockReader();
+}
+
+
+int32
+TailscaleBackend::_RunTunReader()
+{
+	uint8 buf[2048];
+	while (!fStopRequested) {
+		fd_set rd;
+		FD_ZERO(&rd);
+		FD_SET(fTunFd, &rd);
+		struct timeval tv;
+		tv.tv_sec = 0;
+		tv.tv_usec = 200000;	// 200ms so we notice a stop request
+		int r = select(fTunFd + 1, &rd, NULL, NULL, &tv);
+		if (r <= 0)
+			continue;
+
+		ssize_t n = read(fTunFd, buf, sizeof(buf));
+		if (n < 20 || (buf[0] >> 4) != 4)
+			continue;	// need a full IPv4 header (IPv6 not on the tun here)
+
+		char dst[16];
+		snprintf(dst, sizeof(dst), "%u.%u.%u.%u",
+			buf[16], buf[17], buf[18], buf[19]);
+
+		fSessionLock.Lock();
+		ts::ManagedPeer* peer = fSession.Peers().FindByAllowedIP(dst);
+		if (peer != NULL)
+			_SendToPeer(peer, buf, (size_t)n);
+		fSessionLock.Unlock();
+	}
+	return 0;
+}
+
+
+int32
+TailscaleBackend::_RunSockReader()
+{
+	uint8 buf[2048];
+	while (!fStopRequested) {
+		ssize_t n = fMagicSock.Recv(buf, sizeof(buf), NULL, NULL);
+		if (n <= 0)
+			continue;	// timeout / interrupted
+
+		if (ts::MagicSock::Classify(buf, (size_t)n) != ts::PKT_WIREGUARD)
+			continue;	// disco/STUN handling lands in a later pass
+
+		if (buf[0] == 2 && n == 92) {
+			// Handshake response: receiver index (bytes 8..11) is our sender idx.
+			uint32 idx = le32(buf + 8);
+			fSessionLock.Lock();
+			ts::ManagedPeer* p = fSession.Peers().FindBySenderIndex(idx);
+			if (p != NULL)
+				p->wg.ConsumeResponse(buf, (size_t)n);
+			fSessionLock.Unlock();
+		} else if (buf[0] == 4 && n >= 32) {
+			// Transport data: receiver index (bytes 4..7) is our sender idx.
+			uint32 idx = le32(buf + 4);
+			uint8 out[2048];
+			ssize_t plen = -1;
+			fSessionLock.Lock();
+			ts::ManagedPeer* p = fSession.Peers().FindBySenderIndex(idx);
+			if (p != NULL)
+				plen = p->wg.Decapsulate(buf, (size_t)n, out);
+			fSessionLock.Unlock();
+			if (plen > 0 && fTunFd >= 0)
+				write(fTunFd, out, (size_t)plen);	// deliver to the tun
+		}
+	}
+	return 0;
 }
 
 
@@ -417,13 +626,23 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 			self.SendMessage(&m);
 			return;
 		}
-		if (!fSession.ApplyMapResponse(msg.String(), msg.Length()))
+		fSessionLock.Lock();
+		bool ok = fSession.ApplyMapResponse(msg.String(), msg.Length());
+		fSessionLock.Unlock();
+		if (!ok)
 			continue;	// skip a malformed message, keep the stream
 
-		// Once we have a netmap (hence a DERPMap), open the data-plane UDP
-		// socket and learn our public endpoint via DERP STUN.
-		if (!fMagicSock.IsOpen())
+		// On the first netmap: open the data-plane UDP socket + learn our
+		// endpoint (DERP STUN), bring up the tun with our tailnet address, and
+		// start the packet reader threads.
+		if (!fMagicSock.IsOpen()) {
 			_BringUpMagicSock(self);
+			BString selfip = fSession.SelfIPv4();
+			if (fTunInterface.Length() == 0 && selfip.Length() > 0)
+				_BringUpTun(selfip.String());
+			if (fMagicSock.IsOpen() && fTunFd < 0 && fTunNode.Length() > 0)
+				_StartDataPlane();
+		}
 
 		BMessage nm(kMsgTsNetmap);
 		nm.AddInt32("peers", fSession.PeerCount());

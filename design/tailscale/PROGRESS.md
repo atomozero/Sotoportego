@@ -15,6 +15,32 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 5/6: packet data plane (reader threads) — user-authorised
+- Did: Implemented the on-device packet path in `TailscaleBackend` (the user
+  chose "build it anyway" knowing it can't be validated here without a two-node
+  tailnet). On the first netmap the worker brings up the tun, opens magicsock,
+  and starts two reader threads guarded by a `BLocker` against the map worker:
+  * **tun reader** — `select`s the tun fd, reads outbound IPv4 packets, routes by
+    destination via `TSPeerSet::FindByAllowedIP`, and `_SendToPeer`
+    encapsulates + sends over UDP to the peer's endpoint; if the peer has no
+    transport keys it lazily fires a `WGPeer::BuildInitiation` (throttled 5s) and
+    drops the packet until the session is up;
+  * **magicsock reader** — `Recv` + `Classify`; WireGuard type-2 responses
+    (`ConsumeResponse` keyed by our sender index via `FindBySenderIndex`) and
+    type-4 data (`Decapsulate` → `write` to the tun).
+  Added `TSPeerSet::FindBySenderIndex` and a per-peer handshake throttle;
+  `_StopDataPlane` joins the threads and closes the fds on disconnect/exit.
+- Build: **green on-Haiku** (daemon ~412 KB); offline suite still 34/34.
+- **Not yet validated**: this is the initiator-only, direct-path first cut. It has
+  never carried a packet — it needs a live authorized tailnet (Headscale) to
+  develop against, and the DERP relay send/recv path and the disco ping/pong
+  direct-path upgrade are still to be wired into these threads. Treat as
+  structurally complete, functionally unproven.
+- Next (needs live tailnet): route the send through the `DerpClient` when there's
+  no direct path; drive disco ping/pong to feed `PeerPath::UpgradeToDirect`;
+  handle inbound disco/STUN in the sock reader; install AllowedIPs routes and
+  bind MagicDNS on 100.100.100.100:53; `RecoverIfCrashed` rollback.
+
 ## 2026-08-04 — Phase 4/5: magicsock bring-up + STUN endpoint in the backend
 - Did: `TailscaleBackend::_BringUpMagicSock` — once the map loop has a netmap (so
   a DERPMap), the worker opens the magicsock UDP socket and runs a STUN sweep
