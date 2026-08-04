@@ -520,6 +520,15 @@ SotoportegoServer::_EnrichForBroadcast(BMessage* message)
 	}
 	if (!message->HasString(kFieldConnectedHost) && fConnectedHost.Length() > 0)
 		message->AddString(kFieldConnectedHost, fConnectedHost);
+
+	// The backend's own status broadcasts (state changes, stats ticks) don't
+	// carry the peer list -- only the one-shot _FillStatus replies do. Fold it
+	// in here so every broadcast a client sees is consistent; otherwise the
+	// peers window would be cleared each time a peerless state update arrives
+	// (e.g. the CONNECTED "1 peer" notification). Guard against double-adding
+	// on a message that already went through _FillStatus.
+	if (fBackend != NULL && !message->HasMessage(kFieldPeer))
+		fBackend->FillPeers(*message);
 }
 
 
