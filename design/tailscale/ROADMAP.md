@@ -169,8 +169,13 @@ Goal: upgrade DERP relays to peer-to-peer UDP.
 ## Phase 7 — MagicDNS & route acceptance
 Goal: names and advertised routes work.
 
-- [ ] `MagicDNS` stub resolver on `100.100.100.100`; answer tailnet names,
+- [~] `MagicDNS` stub resolver on `100.100.100.100`; answer tailnet names,
       forward the rest per netmap DNS config.
+      *(`TSMagicDns` done + unit-verified: DNS question parse + A-response build,
+      a name→addr table from the netmap, resolving `<host>` and
+      `<host>.<tailnet>.ts.net` to the peer's 100.x, and returning "not mine" for
+      external/unknown names so the caller forwards upstream. Remaining: the
+      UDP:53 bind on the tun + the upstream-forward + resolv.conf plumbing.)*
 - [ ] Optional "accept routes": install advertised subnet routes via
       `TunDevice`/`WireGuardRoutes`, guarded so nothing silently steals the
       default route.

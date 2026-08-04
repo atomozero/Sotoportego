@@ -15,6 +15,25 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 7 (start): MagicDNS stub resolver
+- Did: Added `src/backend/tailscale/TSMagicDns.{h,cpp}` — the MagicDNS stub
+  resolver's message layer + logic. `DnsParseQuestion` decodes a query's QNAME
+  (label sequence, lowercased) and QTYPE; `DnsBuildQuery` builds an A query (for
+  forwarding/tests); `MagicDns` holds a name→IPv4 table (populated from the netmap
+  peers + self) and `Resolve` answers A queries for `<host>` or
+  `<host>.<tailnet>.ts.net` with a proper response (QR/AA set, question echoed, a
+  compressed-name A answer with TTL/RDATA), while returning 0 ("not mine") for
+  non-A, external, or unknown-host names so the caller forwards upstream.
+- Build: **green on-Haiku.** Unit test: `laptop.tail9f3c.ts.net` resolves to
+  `100.64.1.6` (response is QR=1, ANCOUNT=1, id echoed, RDATA correct); a bare
+  `phone` resolves to `100.64.1.9`; `www.example.com` returns 0 (forward
+  upstream); and an unknown tailnet host also returns 0 (passthrough).
+- Next: the remaining data-plane orchestration to make all this carry traffic —
+  the per-peer Noise IKpsk2 handshake keying each `WGPeer`, the magicsock reader
+  thread (disco probe → `PeerPath`, WG demux → `WGPeer::Decapsulate`), the
+  `tun/N` bring-up with `SelfIPv4()`, and binding this resolver on
+  `100.100.100.100:53` with upstream forwarding.
+
 ## 2026-08-04 — Phase 6 (start): PeerPath DERP-then-upgrade state machine
 - Did: Added `src/backend/tailscale/PeerPath.{h,cpp}` — the per-peer send-path
   decision state, and embedded it in `ManagedPeer`. It encodes Tailscale's
