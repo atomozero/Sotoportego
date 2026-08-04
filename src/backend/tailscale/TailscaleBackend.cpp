@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 
@@ -357,10 +358,15 @@ TailscaleBackend::_SendPeerBytes(ts::ManagedPeer* peer, const uint8* buf,
 	size_t len)
 {
 	struct sockaddr_in to;
+	bool dbg = getenv("TS_DP") != NULL;
 	if (peer_sockaddr(peer, to)) {
+		if (dbg) printf("[dp] send %zu B direct\n", len);
 		fMagicSock.SendTo((struct sockaddr*)&to, sizeof(to), buf, len);
 	} else if (fDerpUp) {
+		if (dbg) printf("[dp] send %zu B via DERP\n", len);
 		fDerp.SendPacket(peer->wg.NodeKey(), buf, len);
+	} else if (dbg) {
+		printf("[dp] DROP %zu B (no direct path, DERP down)\n", len);
 	}
 }
 
@@ -412,6 +418,9 @@ TailscaleBackend::_SendDiscoPing(ts::ManagedPeer* peer)
 	uint8 peerDisco[32];
 	if (!ts::TSIdentity::FromHex(peer->discoKey.String(), peerDisco, 32))
 		return;
+	if (getenv("TS_DP") != NULL)
+		printf("[dp] disco ping -> %s (%zu endpoints)\n",
+			peer->hostname.String(), peer->endpoints.size());
 
 	// A disco ping carries a random txid + our node key; a returning pong
 	// arrives on whichever endpoint worked.
@@ -458,6 +467,10 @@ TailscaleBackend::_HandleDiscoPacket(const uint8* buf, size_t len,
 	inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
 	uint16 port = ntohs(from.sin_port);
 	uint8 type = ts::DiscoMessageType(payload, (size_t)pl);
+	if (getenv("TS_DP") != NULL)
+		printf("[dp] disco %s from %s:%u\n",
+			type == ts::DISCO_PING ? "PING" : type == ts::DISCO_PONG ? "PONG"
+				: "?", ip, port);
 
 	if (type == ts::DISCO_PING) {
 		// Answer with a pong echoing the txid and the source we observed, so the
@@ -683,6 +696,8 @@ TailscaleBackend::_RunDerpReader()
 	uint8 buf[2048];
 	while (!fStopRequested) {
 		ssize_t n = fDerp.RecvPacket(src, buf, sizeof(buf));
+		if (getenv("TS_DP") != NULL && n != 0)
+			printf("[dp] DERP recv %zd B\n", n);
 		if (n < 0)
 			break;		// relay connection dropped
 		if (n == 0)
@@ -788,6 +803,9 @@ TailscaleBackend::_RunTunReader()
 
 		fSessionLock.Lock();
 		ts::ManagedPeer* peer = fSession.Peers().FindByAllowedIP(dst);
+		if (getenv("TS_DP") != NULL)
+			printf("[dp] tun->%s peer=%s\n", dst,
+				peer != NULL ? peer->hostname.String() : "NONE");
 		if (peer != NULL)
 			_SendToPeer(peer, buf, (size_t)n);
 		fSessionLock.Unlock();
@@ -808,6 +826,8 @@ TailscaleBackend::_RunSockReader()
 			continue;	// timeout / interrupted
 
 		ts::SockPacketKind kind = ts::MagicSock::Classify(buf, (size_t)n);
+		if (getenv("TS_DP") != NULL)
+			printf("[dp] sock recv %zd B kind=%d\n", n, (int)kind);
 		if (kind == ts::PKT_WIREGUARD) {
 			_HandleWireGuardPacket(buf, (size_t)n);
 		} else if (kind == ts::PKT_DISCO && ss.ss_family == AF_INET) {
@@ -968,6 +988,38 @@ TailscaleBackend::_RunControlFlow()
 }
 
 
+// Learn our primary LAN IPv4 by asking the kernel which source address it
+// would use to reach `host`. No packet is sent (UDP connect just sets the
+// route); getsockname then reports the chosen local address.
+static BString
+local_ipv4(const char* host)
+{
+	BString result;
+	struct addrinfo hints;
+	struct addrinfo* ai = NULL;
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_DGRAM;
+	if (getaddrinfo(host, "443", &hints, &ai) != 0 || ai == NULL)
+		return result;
+	int s = socket(AF_INET, SOCK_DGRAM, 0);
+	if (s >= 0) {
+		if (connect(s, ai->ai_addr, ai->ai_addrlen) == 0) {
+			struct sockaddr_in local;
+			socklen_t ll = sizeof(local);
+			if (getsockname(s, (struct sockaddr*)&local, &ll) == 0) {
+				char ip[INET_ADDRSTRLEN];
+				inet_ntop(AF_INET, &local.sin_addr, ip, sizeof(ip));
+				result = ip;
+			}
+		}
+		close(s);
+	}
+	freeaddrinfo(ai);
+	return result;
+}
+
+
 void
 TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 {
@@ -982,10 +1034,28 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 		return;
 	}
 
+	// Open the UDP socket up front so we can advertise a real endpoint (our LAN
+	// address + magicsock port) in the very first MapRequest. Control relays it
+	// to peers, who then disco-ping us and open a direct path -- without an
+	// advertised endpoint a same-LAN peer has no address to reach us at.
+	if (!fMagicSock.IsOpen())
+		fMagicSock.Open(0);
+	BString endpointsJson;
+	if (fMagicSock.IsOpen()) {
+		BString lan = local_ipv4(fControlHost.String());
+		if (lan.Length() > 0) {
+			endpointsJson.SetToFormat("\"%s:%u\"", lan.String(),
+				(unsigned)fMagicSock.LocalPort());
+			printf("[tailscale] advertising endpoint %s\n",
+				endpointsJson.String());
+		}
+	}
+
 	ts::MapStream map;
 	int status = 0;
 	status_t result = map.Begin(session.Http2(), fControlHost.String(), version,
-		fIdentity.NodePublic(), fHostname.String(), &status);
+		fIdentity.NodePublic(), fIdentity.DiscoPublic(), fHostname.String(),
+		endpointsJson.String(), &status);
 	if (result != B_OK || status != 200) {
 		BMessage m(kMsgTsFailed);
 		BString detail;

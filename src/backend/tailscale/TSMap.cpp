@@ -26,23 +26,30 @@ MapStream::MapStream()
 
 status_t
 MapStream::Begin(Http2Conn& h2, const char* host, uint16 version,
-	const uint8 nodePub[32], const char* hostname, int* outStatus)
+	const uint8 nodePub[32], const uint8 discoPub[32], const char* hostname,
+	const char* endpointsJson, int* outStatus)
 {
 	fHttp2 = &h2;
 	fAcc.clear();
 	fAccOff = 0;
 
 	BString nodeHex = TSIdentity::ToHex(nodePub, 32);
+	BString discoHex = TSIdentity::ToHex(discoPub, 32);
 
 	// Minimal streaming MapRequest. Compress is omitted (""), so responses are
 	// plain JSON; Stream:true asks for the snapshot-then-deltas long poll.
+	// DiscoKey is essential: control propagates it to peers so they can open
+	// (and answer) our NaCl-boxed disco pings -- without it no direct path can
+	// ever form. Endpoints let peers reach us directly too.
 	BString body;
 	body << "{";
 	body << "\"Version\":" << (int32)version << ",";
 	body << "\"NodeKey\":\"nodekey:" << nodeHex << "\",";
+	body << "\"DiscoKey\":\"discokey:" << discoHex << "\",";
 	body << "\"Stream\":true,";
 	body << "\"OmitPeers\":false,";
-	body << "\"Endpoints\":[],";
+	body << "\"Endpoints\":["
+		<< (endpointsJson != NULL ? endpointsJson : "") << "],";
 	body << "\"Hostinfo\":{";
 	body << "\"IPNVersion\":\"0.1.0\",";
 	body << "\"Hostname\":\"" << (hostname != NULL ? hostname : "haiku") << "\",";

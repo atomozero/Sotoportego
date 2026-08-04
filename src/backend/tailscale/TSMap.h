@@ -37,7 +37,9 @@ public:
 			// response headers were read.
 			status_t			Begin(Http2Conn& h2, const char* host,
 									uint16 version, const uint8 nodePub[32],
-									const char* hostname, int* outStatus);
+									const uint8 discoPub[32],
+									const char* hostname,
+									const char* endpointsJson, int* outStatus);
 
 			// Read the next length-prefixed MapResponse JSON message into
 			// `outJson`. Returns B_OK with a message, B_ENTRY_NOT_FOUND at clean
