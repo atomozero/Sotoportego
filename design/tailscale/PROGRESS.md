@@ -15,6 +15,24 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 4: STUN client (live public endpoint discovered)
+- Did: Added `src/backend/tailscale/TSStun.{h,cpp}` — a minimal RFC 5389 STUN
+  binding client. `StunBuildRequest` emits a 20-byte binding request with a
+  random transaction id; `StunParseResponse` validates the binding-success
+  response (magic cookie + tx id) and decodes XOR-MAPPED-ADDRESS (with a
+  MAPPED-ADDRESS fallback), un-XORing the IPv4 address/port against the magic
+  cookie; `StunQuery` does the UDP round-trip (getaddrinfo + a 5s recv timeout).
+- Build: **green on-Haiku.** Two-part test: offline, a crafted XOR-MAPPED-ADDRESS
+  response decodes to `1.2.3.4:4660`; **live**, a binding request to a public STUN
+  server reflected this box's real public endpoint (`151.34.38.188:46089`). That
+  reflexive `ip:port` is exactly what magicsock reports to control as one of our
+  endpoints for peers to hole-punch toward.
+- Next: `TSDisco` — encode/decode the disco protocol messages (CallMeMaybe,
+  Ping, Pong) that magicsock exchanges to find a working direct path. They carry
+  the `TS💬` magic + the sender's disco public key and are NaCl-boxed to the
+  peer's disco key (now that `NaClBox` exists), unit-testable by boxing a
+  ping/pong to ourselves and checking the round-trip + magic header.
+
 ## 2026-08-04 — Phase 4 (start): NaCl box for disco (canonical vectors pass)
 - Did: Added `src/backend/tailscale/NaClBox.{h,cpp}` — NaCl "box" authenticated
   public-key encryption (Curve25519 + XSalsa20-Poly1305), the one primitive the

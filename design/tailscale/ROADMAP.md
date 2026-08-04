@@ -108,7 +108,11 @@ Goal: discover our endpoints and probe peers.
       NaCl box vectors — beforenm shared key = the known firstkey, the full box
       reproduces the reference ciphertext exactly, open round-trips, tamper is
       rejected.)*
-- [ ] `STUN`: binding request/response; learn public `ip:port` per interface.
+- [x] `STUN`: binding request/response; learn public `ip:port` per interface.
+      *(Done: `TSStun` binding request + XOR-MAPPED-ADDRESS (and MAPPED-ADDRESS)
+      parse, plus a `StunQuery` UDP round-trip. Verified offline (crafted
+      response) and LIVE against a public STUN server, which reflected our real
+      public `ip:port` — exactly the endpoint magicsock reports for hole-punching.)*
 - [ ] `TSDisco`: encode/decode disco ping/pong; report local endpoints to
       control on the next `MapRequest`.
 - **Done when:** NaCl box vectors pass and STUN returns our public endpoint.
