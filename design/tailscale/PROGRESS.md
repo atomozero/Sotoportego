@@ -15,6 +15,26 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 4 (start): NaCl box for disco (canonical vectors pass)
+- Did: Added `src/backend/tailscale/NaClBox.{h,cpp}` — NaCl "box" authenticated
+  public-key encryption (Curve25519 + XSalsa20-Poly1305), the one primitive the
+  Noise/WireGuard reuse couldn't cover and which Tailscale's `disco` protocol
+  needs. Ported the Salsa20 core, HSalsa20, XSalsa20 stream and Poly1305 MAC from
+  public-domain TweetNaCl; the Curve25519 scalar mult delegates to OpenSSL's
+  X25519 (`wg::Dh`, identical to `crypto_scalarmult`). Clean API: `BoxBeforeNm`
+  (shared key), `BoxSeal/BoxOpen` (one-shot with peer key), and the
+  precomputed-key variants — internally handling TweetNaCl's zero-byte padding
+  convention.
+- Build: **green on-Haiku.** Unit test against the **canonical NaCl box vectors**:
+  `BoxBeforeNm(alicesk, bobpk)` equals the published firstkey
+  `1b275564…44f68389`; sealing the 131-byte reference message reproduces the
+  reference ciphertext (tag+ct) byte-for-byte; `BoxOpen` round-trips; and a single
+  flipped ciphertext byte fails authentication.
+- Next: Phase 4 continues — `STUN` (a minimal binding request/response to learn
+  our public ip:port per interface) and `TSDisco` (encode/decode the disco
+  ping/pong messages, which are NaCl-boxed with the disco key and carry the magic
+  `TS`+0x9c... prefix). Both are small and unit-testable offline.
+
 ## 2026-08-03 — Phase 3: DERPMap + DNSConfig parsing (netmap parse complete)
 - Did: Extended `TSNetmap` to parse the `DERPMap` (its `Regions` map keyed by
   region-id strings → each region's code + `Nodes` array of relay servers with

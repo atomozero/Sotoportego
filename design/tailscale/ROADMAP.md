@@ -102,7 +102,12 @@ Goal: turn a `MapResponse` into live WireGuard peer state.
 ## Phase 4 — disco protocol + NaCl box + STUN
 Goal: discover our endpoints and probe peers.
 
-- [ ] `NaClBox`: Curve25519 + XSalsa20-Poly1305, verified against test vectors.
+- [x] `NaClBox`: Curve25519 + XSalsa20-Poly1305, verified against test vectors.
+      *(Done: Salsa20 core/HSalsa20/XSalsa20/Poly1305 ported from public-domain
+      TweetNaCl, Curve25519 via OpenSSL X25519. Verified against the canonical
+      NaCl box vectors — beforenm shared key = the known firstkey, the full box
+      reproduces the reference ciphertext exactly, open round-trips, tamper is
+      rejected.)*
 - [ ] `STUN`: binding request/response; learn public `ip:port` per interface.
 - [ ] `TSDisco`: encode/decode disco ping/pong; report local endpoints to
       control on the next `MapRequest`.
