@@ -2,9 +2,12 @@
 
 Native VPN client for Haiku: a privilege-separated background daemon that
 owns the VPN lifecycle, with a Haiku-native GUI front-end and a CLI test
-client driving it over `BMessage`. OpenVPN is wired in end to end —
-`.ovpn` import, real management-interface session, `tun/0` device set-up,
-routing fix-up, live throughput and event log.
+client driving it over `BMessage`. Three backends plug into one seam:
+OpenVPN (end to end — `.ovpn` import, management-interface session, `tun/0`
+set-up, routing fix-up), a from-scratch in-process **WireGuard**, and a
+from-scratch in-process **Tailscale** client (Haiku has no `tailscaled`) —
+ts2021 control plane, network map, DERP relay, disco NAT traversal and
+MagicDNS, with a live peer list in the GUI.
 
 <p align="center">
   <img src="img/screenshot01.png" alt="Connection tab" width="640" /><br/>
@@ -64,9 +67,25 @@ If Sotoportego saves you time, consider supporting development: [![Buy Me A Coff
   logged and skipped rather than routed: Haiku's tun driver has no `AF_INET6`
   (an inet6 address can't be assigned to a `tun/N` slot), so IPv6 can't be
   carried through the tunnel yet — see the roadmap.
+* **Tailscale backend** *(experimental)* — a from-scratch, in-process
+  Tailscale client (Haiku has no `tailscaled`). The `ts2021` control plane
+  runs end to end and is verified live against the production coordination
+  server: Noise IK handshake over an OpenSSL TLS transport, an HTTP/2 +
+  HPACK (incl. Huffman) stack, node registration with browser SSO
+  (`AuthURL` auto-opened) or an optional pre-auth key (kept in the
+  keystore), and a streamed network map with incremental peer deltas. The
+  data plane brings up a `tun/N` with the tailnet address, installs the
+  `100.64.0.0/10` route, resolves names with an in-process MagicDNS server,
+  and carries WireGuard either directly (disco ping/pong hole-punching) or
+  relayed through the peer's home **DERP** region. A *Tailscale* menu adds
+  a network, opens the admin console / signup, and a live **peers window**
+  lists each machine's tailnet IP, path (direct/relay) and status. Add it
+  from *Tailscale → Add Tailscale network…* and it behaves like any other
+  profile. See *Tailscale* below and `design/tailscale/`.
 * **Asynchronous status broadcasts** — `kMsgStatusUpdate` /
-  `kMsgStatsUpdate` carry state, detail, both ends of the tunnel and a
-  throughput snapshot to every subscribed client.
+  `kMsgStatsUpdate` carry state, detail, both ends of the tunnel, the
+  connected profile's identity and (for Tailscale) the peer list, to every
+  subscribed client.
 * **Mose-inspired GUI** — slate header banner with the HVIF brand tile
   and a state-coloured status dot, tabbed `Connection` / `Statistics`
   layout, About dialog with the same brand identity.
@@ -116,6 +135,11 @@ If Sotoportego saves you time, consider supporting development: [![Buy Me A Coff
   the GUI binary on next login via the standard add-on path.
 * **Built-in event log** — every state transition is appended to the
   Statistics tab with a timestamp, so failures are never silent.
+* **Keyboard shortcuts + scripting** — the common commands carry Command-key
+  shortcuts (Connect `K`, Disconnect `D`, Add Tailscale network `T`, Show
+  peers `P`, Browse on map `M`, Quit `Q`), and the app exposes a scripting
+  suite so it can be driven from the command line with Haiku's `hey`:
+  `hey Sotoportego do Connect` / `hey Sotoportego do Disconnect`.
 
 
 ## Requirements
@@ -215,6 +239,37 @@ openvpn uses them all and the profile is named after the first. The
 crypto (`<ca>`, `<tls-crypt>`, cipher) is handled by openvpn itself from
 the config, so any suite your Haiku `openvpn` build supports will
 connect.
+
+### Tailscale *(experimental)*
+
+Tailscale is a mesh VPN: instead of one server, every device joins a
+*tailnet* and reaches the others directly (or via a relay). Sotoportego
+implements the client from scratch — there is no `tailscaled` on Haiku.
+
+1. **Create an account** if you don't have one: *Tailscale → Create a
+   Tailscale account…* opens the sign-up in your browser. Tailscale has no
+   email/password — you sign in with an identity provider (Google,
+   Microsoft, GitHub…).
+2. **Add the network**: *Tailscale → Add Tailscale network…*, give it a
+   name, leave the control server as `controlplane.tailscale.com` (or point
+   it at a self-hosted Headscale), and leave **Auth key** blank for browser
+   sign-in. A profile is created just like an imported one.
+3. **Connect**: select the profile and hit **Connect**. A browser window
+   opens for you to authorize the machine (skipped if the node is already
+   authorized or you pasted a pre-auth key). Once authorized the header
+   shows *Connected* with the node's `100.x` tunnel IP.
+4. **See the tailnet**: *Tailscale → Show peers…* lists every other machine
+   with its tailnet IP, whether the path is **direct** or **relay**, and its
+   online status. *Open admin console…* jumps to the web dashboard.
+
+The control plane, network map, routing, `tun/N`, MagicDNS and the DERP
+relay path are all implemented; peer-to-peer packet delivery is wired end
+to end (tun ↔ WireGuard ↔ direct/DERP) but still being hardened against
+real peers on arbitrary networks — hence *experimental*. Feedback welcome.
+An optional pre-auth key (for headless machines) is stored in the Haiku
+keystore, never in the profile. See `design/tailscale/` for the protocol
+notes and `src/backend/tailscale/tests/` (`make test`) for the offline
+regression suite.
 
 ### Browse servers on a map
 
@@ -373,19 +428,17 @@ scripts/       verify-tunnel.sh — shell check that the tunnel is
 
 ## Roadmap
 
-* **Tailscale backend** — a from-scratch, in-process Tailscale client (Haiku has
-  no `tailscaled`), built as a fourth backend behind the same seam. The full
-  `ts2021` control plane is implemented and verified live against the production
-  coordination server: the Noise IK handshake, an OpenSSL TLS transport, the
-  HTTP/2 + HPACK (incl. Huffman) stack, and node registration returning a real
-  login `AuthURL` (auto-opened by the GUI). The network map, NAT-traversal
-  primitives (NaCl box, STUN, disco), the DERP relay client and MagicDNS are all
-  implemented and unit/live-verified, and the session brings up a `tun/N` with
-  the tailnet address + discovers our public endpoint via STUN. What's left is
-  the on-device packet forwarding threads (tun ↔ WireGuard peers ↔ magicsock/
-  DERP), which need a live two-node tailnet / Headscale to finish and validate —
-  see `design/tailscale/` (`STATUS.md` has the module map + runbook). An offline
-  regression suite lives in `src/backend/tailscale/tests/` (`make test`).
+* **Tailscale backend** — shipping as *experimental* (see *Tailscale* above).
+  The `ts2021` control plane, streamed network map with peer deltas, routing,
+  `tun/N`, MagicDNS, the disco NAT-traversal primitives and the DERP relay
+  path are all implemented and the data plane is wired end to end (tun ↔
+  WireGuard ↔ direct/DERP). What remains is hardening peer-to-peer packet
+  delivery against real peers across arbitrary networks (client-isolated
+  Wi-Fi, CGNAT) and validating the direct-vs-relay handshake at scale — the
+  control plane and relay connection are proven, the last mile is the live
+  WireGuard-over-DERP handshake with a second node. See `design/tailscale/`
+  (`STATUS.md` has the module map + runbook); the offline regression suite is
+  in `src/backend/tailscale/tests/` (`make test`).
 * IPv6 routing — **blocked upstream in Haiku**, not just unimplemented here.
   Haiku's kernel `tunnel` driver rejects `AF_INET6`: an inet6 address can't be
   assigned to a `tun/N` interface (`ifconfig … inet6 …` → *Invalid Argument*),

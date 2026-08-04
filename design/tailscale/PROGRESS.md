@@ -15,6 +15,44 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Release 0.2.0: data plane, DERP relay, peers UI, disconnect fixes
+- Did: Shipped the Tailscale backend as *experimental* in 0.2.0.
+  - **Netmap deltas**: `TSNetmap::Parse` is now delta-aware — applies
+    `PeersChanged` / `PeersChangedPatch` / `PeersRemoved` (keyed by NodeID) and
+    only replaces a section when present, so a peer that joins after connect
+    actually appears (it used to clear everything and read only `Peers`). Falls
+    back to a peer's `Addresses` when it omits `AllowedIPs` (routing + display).
+  - **Connected state**: the map worker flags whether the tun is up so the
+    session reaches `CONNECTED` (self IP + peer count) instead of sitting in
+    AUTHENTICATING; the daemon config-path gate is skipped for Tailscale.
+  - **Advertise for reachability**: the MapRequest now carries our DiscoKey, our
+    LAN endpoint (getsockname probe) and, after picking the peer's home DERP
+    region, our DERP home (`127.3.3.40:<region>`) via a one-shot second
+    MapRequest — so peers can disco-ping us and relay back.
+  - **DERP relay accepted**: dropped `meshKey` from clientInfo (a present, even
+    empty, meshKey made the public relay treat us as a mesh peer and close);
+    connect to the *peer's* home region, not the first; serialise SSL_read/write
+    behind a lock (OpenSSL forbids concurrent access); relay WireGuard via DERP
+    until disco confirms a direct path; tolerate idle reads (would-block retry).
+  - **Disconnect**: was crashing/handing and leaving `tun/N` up. Join the DERP
+    reader before freeing its SSL (use-after-free), give the reader a stop flag
+    it polls on an idle read, and drop the map read timeout to 2s so the worker
+    notices a stop within ~1s. Tears down cleanly in about a second now.
+  - **GUI**: live peers window (machine / tailnet IP / path / status), Tailscale
+    menu (add network, show peers, create account, admin console), optional
+    pre-auth key in the keystore, Server box now reflects the *connected* profile
+    (with a notice when the selection differs), Connect button in the header
+    banner, custom About, URL opening via `BUrl`, keyboard shortcuts and a `hey`
+    scripting suite (`do Connect` / `do Disconnect`).
+- Build: `make test` 34/34; daemon + GUI green; verified live against
+  `controlplane.tailscale.com` (register → SSO → netmap → CONNECTED → peers).
+- Known gap: the live WireGuard-over-DERP handshake to a second real node
+  hasn't completed on a client-isolated phone hotspot — the relay connects and
+  we send the handshake, the peer isn't handshaking back yet. Needs a normal LAN
+  or two controlled nodes to validate the last mile.
+- Next: harden P2P delivery (direct disco on a non-isolated LAN; WG-over-DERP
+  handshake completion), then AllowedIPs route install for subnet routers.
+
 ## 2026-08-04 — Fix: fresh connection per register/poll/map (followup bug)
 - Did: A live end-to-end run against controlplane.tailscale.com registered a node
   (HTTP 200 + a real AuthURL) but the followup poll failed instantly with "record
