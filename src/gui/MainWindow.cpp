@@ -64,6 +64,10 @@ static const uint32 kMsgBrowseOnMap			= 'gMap';
 static const uint32 kMsgUptimeTick			= 'gUpT';
 static const uint32 kMsgAddTailscale		= 'gTsA';	// open the Tailscale dialog
 static const uint32 kMsgTailscaleOK			= 'gTsO';	// dialog -> create profile
+static const uint32 kMsgTailscaleSignup		= 'gTsS';	// open the account signup page
+
+// Where a new user goes to create a Tailscale account (opens in the browser).
+static const char* const kTailscaleSignupURL = "https://login.tailscale.com/start";
 
 static const char* const kBackendName	= "OpenVPN";
 
@@ -145,6 +149,9 @@ MainWindow::_BuildLayout()
 	BMenu* tailscaleMenu = new BMenu("Tailscale");
 	tailscaleMenu->AddItem(new BMenuItem("Add Tailscale network" B_UTF8_ELLIPSIS,
 		new BMessage(kMsgAddTailscale)));
+	tailscaleMenu->AddSeparatorItem();
+	tailscaleMenu->AddItem(new BMenuItem("Create a Tailscale account"
+		B_UTF8_ELLIPSIS, new BMessage(kMsgTailscaleSignup)));
 	menuBar->AddItem(tailscaleMenu);
 
 	BMenu* toolsMenu = new BMenu("Tools");
@@ -422,6 +429,15 @@ MainWindow::MessageReceived(BMessage* message)
 			if (message->FindString(kFieldTsUrl, &url) != B_OK || url == NULL)
 				url = "controlplane.tailscale.com";
 			_CreateTailscaleProfile(name, url);
+			break;
+		}
+		case kMsgTailscaleSignup:
+		{
+			// Open the Tailscale signup page in the default web browser so a
+			// new user can create an account, then come back and add it here.
+			char* argv[1];
+			argv[0] = (char*)kTailscaleSignupURL;
+			be_roster->Launch("application/x-vnd.Be-URL.https", 1, argv);
 			break;
 		}
 		case kMsgProfileSelected:
