@@ -54,6 +54,11 @@ public:
 			// authentication failure.
 			ssize_t				ReadRecord(uint8* buf, size_t cap);
 
+			// Override the underlying TLS receive timeout (seconds). Used to
+			// make the map long-poll poll a stop flag often enough to disconnect
+			// promptly instead of blocking up to the default 30s.
+			void				SetReadTimeout(int seconds);
+
 private:
 			status_t			_ReadFull(uint8* buf, size_t len);
 

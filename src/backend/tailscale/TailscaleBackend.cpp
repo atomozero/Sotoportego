@@ -687,6 +687,7 @@ TailscaleBackend::_BringUpDerp()
 	}
 	fDerpUp = true;
 	fDerpHomeRegion = chosen;
+	fDerp.SetStopFlag(&fStopRequested);	// let the reader break out on stop
 	printf("[tailscale] DERP relay connected (%s)\n", host.String());
 	fDerpReader = spawn_thread(_DerpReaderEntry, "tailscale-derp",
 		B_NORMAL_PRIORITY, this);
@@ -796,14 +797,19 @@ TailscaleBackend::_StopDataPlane()
 		wait_for_thread(fSockReader, &ignored);
 		fSockReader = -1;
 	}
-	if (fDerpUp) {
-		fDerp.Close();	// unblocks the DERP reader's TLS read
-		fDerpUp = false;
-	}
+	// The DERP reader breaks out of its idle read via the stop flag (set above)
+	// within one receive timeout, so just JOIN it, THEN free the SSL. We must
+	// NOT socket-shutdown to hurry it: on Haiku that wedges the pending recv
+	// instead of waking it, and freeing the SSL while the reader is still inside
+	// SSL_read is a use-after-free crash -- the join is what makes Close() safe.
 	if (fDerpReader >= 0) {
 		status_t ignored;
 		wait_for_thread(fDerpReader, &ignored);
 		fDerpReader = -1;
+	}
+	if (fDerpUp) {
+		fDerp.Close();
+		fDerpUp = false;
 	}
 	if (fTunFd >= 0) {
 		close(fTunFd);
@@ -1076,6 +1082,10 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 		self.SendMessage(&m);
 		return;
 	}
+	// Wake the long-poll read every couple of seconds so the loop notices a
+	// Disconnect promptly (the -2/would-block return just re-polls) instead of
+	// blocking on the default 30s timeout.
+	session.SetReadTimeout(2);
 
 	// Open the UDP socket up front so we can advertise a real endpoint (our LAN
 	// address + magicsock port) in the very first MapRequest. Control relays it

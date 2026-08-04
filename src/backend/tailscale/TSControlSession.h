@@ -64,6 +64,10 @@ public:
 			// caller can drive the map long-poll on Http2(). Returns B_OK.
 			status_t			Establish();
 
+			// Override the current connection's TLS receive timeout (seconds),
+			// so the map long-poll wakes often enough to notice a stop request.
+			void				SetReadTimeout(int seconds);
+
 			const BString&		EarlyJson() const { return fEarlyJson; }
 			Http2Conn&			Http2() { return fHttp2; }
 			const char*			LastError() const { return fLastError.String(); }

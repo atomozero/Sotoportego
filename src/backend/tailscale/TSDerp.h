@@ -70,7 +70,18 @@ public:
 			ssize_t				RecvPacket(uint8 outSrcKey[32], uint8* out,
 									size_t cap);
 
-			// Close the relay connection (also unblocks a blocked RecvPacket).
+			// A stop flag the blocking read polls: when it flips true, an idle
+			// read (receive timeout) returns an error instead of retrying, so
+			// the reader thread can exit promptly. The socket timeout alone
+			// isn't enough because a quiet relay keeps retrying inside _Fill.
+			void				SetStopFlag(const volatile bool* flag)
+									{ fStopFlag = flag; }
+
+			// Unblock a blocked RecvPacket (socket shutdown) without freeing the
+			// TLS session; call before joining the reader, then Close().
+			void				Shutdown() { fTls.Shutdown(); }
+			// Close the relay connection (frees the TLS session). Only safe once
+			// no thread is inside RecvPacket -- Shutdown() + join first.
 			void				Close() { fTls.Close(); }
 
 			const uint8*		ServerKey() const { return fServerKey; }
@@ -95,6 +106,7 @@ private:
 			uint8				fBuf[65536];
 			size_t				fBufOff;
 			size_t				fBufLen;
+			const volatile bool*	fStopFlag;	// polled to break an idle read
 };
 
 }	// namespace ts

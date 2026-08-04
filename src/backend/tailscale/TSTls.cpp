@@ -207,6 +207,17 @@ TlsClient::Read(void* buf, size_t len)
 
 
 void
+TlsClient::Shutdown()
+{
+	// Socket-level only: unblocks a peer thread stuck in SSL_read (recv returns)
+	// so it can exit before Close() frees the SSL. Safe to call concurrently
+	// with SSL_read since it touches the fd, not the SSL object.
+	if (fSocket >= 0)
+		shutdown(fSocket, SHUT_RDWR);
+}
+
+
+void
 TlsClient::Close()
 {
 	if (fSsl != NULL) {

@@ -60,6 +60,11 @@ public:
 			ssize_t				Write(const void* buf, size_t len);
 			ssize_t				Read(void* buf, size_t len);
 
+			// Interrupt a blocked Read at the socket level (shutdown the fd)
+			// WITHOUT freeing the SSL object, so a reader thread can unwind
+			// before Close() frees it. Freeing SSL while another thread is in
+			// SSL_read is a use-after-free.
+			void				Shutdown();
 			void				Close();
 			bool				IsConnected() const { return fSsl != NULL; }
 

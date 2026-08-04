@@ -118,6 +118,14 @@ ControlConn::ControlConn()
 
 
 void
+ControlConn::SetReadTimeout(int seconds)
+{
+	if (fTls != NULL)
+		fTls->SetReadTimeout(seconds);
+}
+
+
+void
 ControlConn::Init(TlsClient* tls, const NoiseTransportKeys& keys,
 	const uint8* pending, size_t pendingLen)
 {

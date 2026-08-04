@@ -91,6 +91,10 @@ static const char* const kFieldState		= "soto:state";
 static const char* const kFieldDetail		= "soto:detail";
 // Archived VPNProfile (a nested BMessage).
 static const char* const kFieldProfile		= "soto:profile";
+// The profile the daemon is actually connected to, archived and folded into a
+// status broadcast while a session is live. Lets a client show the *connected*
+// profile's details instead of whatever happens to be selected in its list.
+static const char* const kFieldConnectedProfile	= "soto:connectedProfile";
 // BMessenger identifying a client (for subscribe / targeted replies).
 static const char* const kFieldClient		= "soto:client";
 // Name of the active backend ("OpenVPN", ...).

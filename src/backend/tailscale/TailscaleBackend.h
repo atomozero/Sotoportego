@@ -145,7 +145,7 @@ private:
 			BString				fAuthKey;
 
 			thread_id			fWorker;		// -1 when none
-			bool				fStopRequested;
+			volatile bool		fStopRequested;	// set from another thread
 
 			// The netmap-derived data-plane state, updated by the map loop.
 			ts::SessionState	fSession;

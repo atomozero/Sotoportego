@@ -467,9 +467,17 @@ SotoportegoServer::_FillStatus(BMessage* message)
 		return;
 	}
 
-	message->AddInt32(kFieldState, (int32)fBackend->State());
+	VPNState state = fBackend->State();
+	message->AddInt32(kFieldState, (int32)state);
 	message->AddString(kFieldBackend, fBackend->BackendName());
 	fBackend->Stats().Archive(message);
+
+	// While a session is live, tell clients which profile is actually
+	// connected (fReconnectProfile is the archived profile of the current
+	// connect), so they can show its details rather than the selected one.
+	bool live = state != VPN_STATE_DISCONNECTED && state != VPN_STATE_ERROR;
+	if (live && !fReconnectProfile.IsEmpty())
+		message->AddMessage(kFieldConnectedProfile, &fReconnectProfile);
 
 	BString localIP = fBackend->LocalIP();
 	if (localIP.Length() > 0)

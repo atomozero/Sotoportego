@@ -27,7 +27,8 @@ DerpClient::DerpClient()
 	:
 	fLastError(""),
 	fBufOff(0),
-	fBufLen(0)
+	fBufLen(0),
+	fStopFlag(NULL)
 {
 	memset(fServerKey, 0, sizeof(fServerKey));
 	memset(fNodePriv, 0, sizeof(fNodePriv));
@@ -54,9 +55,15 @@ DerpClient::_Fill(size_t need)
 			fBufLen = live;
 		}
 		ssize_t n = fTls.Read(fBuf + fBufLen, sizeof(fBuf) - fBufLen);
-		if (n == -2)
-			continue;	// receive timeout: DERP is quiet, keep waiting -- do
-						// NOT treat an idle relay as a closed connection
+		if (n == -2) {
+			// Receive timeout: the relay is just quiet, keep waiting -- unless a
+			// stop was requested, in which case bail so the reader can exit.
+			if (fStopFlag != NULL && *fStopFlag) {
+				fLastError = "stopped";
+				return B_CANCELED;
+			}
+			continue;
+		}
 		if (n <= 0) {
 			fLastError = "DERP connection closed";
 			return B_IO_ERROR;

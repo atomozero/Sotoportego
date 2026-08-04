@@ -106,6 +106,7 @@ private:
 			BStringView*		fProtocolLabel;
 			BStringView*		fTunnelIPValue;
 			BStringView*		fExternalIPValue;
+			BStringView*		fConnNotice;
 			BStringView*		fSinceValue;
 			BStringView*		fDownValue;
 			BStringView*		fUpValue;
@@ -148,6 +149,12 @@ private:
 		// update.
 			BMessenger				fPeersWindow;
 			BMessage				fLastPeers;
+
+		// The profile the daemon reports as actually connected (broadcast in
+		// the status), so the Server box describes the live session rather than
+		// the list selection. fHasConnectedProfile is false while idle.
+			VPNProfile				fConnectedProfile;
+			bool					fHasConnectedProfile;
 };
 
 

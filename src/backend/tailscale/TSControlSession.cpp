@@ -38,6 +38,14 @@ ControlSession::~ControlSession()
 
 
 void
+ControlSession::SetReadTimeout(int seconds)
+{
+	if (fConn != NULL)
+		fConn->SetReadTimeout(seconds);
+}
+
+
+void
 ControlSession::SetParams(const char* host, uint16 port, bool insecure,
 	uint16 version, const uint8 machinePriv[32], const uint8 machinePub[32])
 {

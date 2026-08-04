@@ -122,6 +122,7 @@ MainWindow::MainWindow()
 	fProtocolLabel(NULL),
 	fTunnelIPValue(NULL),
 	fExternalIPValue(NULL),
+	fConnNotice(NULL),
 	fSinceValue(NULL),
 	fDownValue(NULL),
 	fUpValue(NULL),
@@ -138,7 +139,8 @@ MainWindow::MainWindow()
 	fSelectedName(),
 	fCountry(),
 	fLastConnectProfile(),
-	fLastUsedStoredCredentials(false)
+	fLastUsedStoredCredentials(false),
+	fHasConnectedProfile(false)
 {
 	_BuildLayout();
 	_UpdateForState(VPN_STATE_DISCONNECTED, NULL);
@@ -286,6 +288,18 @@ MainWindow::_BuildConnectionTab()
 	fExternalIPValue = new BStringView("externalIPValue", "\xe2\x80\x94");
 	fExternalIPValue->SetFont(be_bold_font);
 
+	// Shown only when the profile selected in the list isn't the one actually
+	// connected, so the details above are never silently misread.
+	fConnNotice = new BStringView("connNotice", "");
+	BFont noticeFont(be_plain_font);
+	noticeFont.SetSize(be_plain_font->Size() - 1);
+	fConnNotice->SetFont(&noticeFont);
+	fConnNotice->SetHighColor(tint_color(ui_color(B_PANEL_TEXT_COLOR), 0.65f));
+	// Don't let the notice widen the window: a small min width plus end
+	// truncation keep it inside whatever width the details already need.
+	fConnNotice->SetExplicitMinSize(BSize(40, B_SIZE_UNSET));
+	fConnNotice->SetTruncation(B_TRUNCATE_END);
+
 	BLayoutBuilder::Grid<>(detailsBox, B_USE_DEFAULT_SPACING,
 			B_USE_SMALL_SPACING)
 		.SetInsets(B_USE_DEFAULT_SPACING, B_USE_BIG_INSETS,
@@ -299,7 +313,8 @@ MainWindow::_BuildConnectionTab()
 		.Add(new BStringView("tunnelIPCaption", "Tunnel IP:"), 0, 3)
 		.Add(fTunnelIPValue, 1, 3)
 		.Add(new BStringView("externalIPCaption", "External IP:"), 0, 4)
-		.Add(fExternalIPValue, 1, 4);
+		.Add(fExternalIPValue, 1, 4)
+		.Add(fConnNotice, 0, 5, 2, 1);
 
 	// The primary Connect/Disconnect button lives in the header banner
 	// (see _BuildLayout), not at the bottom of this tab.
@@ -556,9 +571,23 @@ MainWindow::MessageReceived(BMessage* message)
 					|| (VPNState)state == VPN_STATE_ERROR) {
 				fCountry = "";
 			}
+			// Which profile is actually connected (the daemon includes it while
+			// a session is live). Drives the Server box + the "different
+			// selection" notice via _RefreshDetails below.
+			BMessage connectedArchive;
+			if (message->FindMessage(kFieldConnectedProfile, &connectedArchive)
+					== B_OK) {
+				fConnectedProfile = VPNProfile();
+				fConnectedProfile.Unarchive(connectedArchive);
+				fHasConnectedProfile = true;
+			} else {
+				fHasConnectedProfile = false;
+			}
+
 			_UpdateForState((VPNState)state, detail);
 			_ApplyStats(message);
 			_UpdatePeers(message);
+			_RefreshDetails();
 			break;
 		}
 
@@ -986,11 +1015,23 @@ MainWindow::_RefreshDetails()
 	if (fRemoveButton != NULL)
 		fRemoveButton->SetEnabled(hasSelection);
 
+	// The Server box must describe the profile that's actually CONNECTED, not
+	// whatever is highlighted in the list. When a session is live we show the
+	// connected profile (broadcast by the daemon) and, if the user has selected
+	// a different one, a notice so the two are never confused.
+	const VPNProfile* shown = hasSelection ? selected : NULL;
+	bool differs = false;
+	if (fHasConnectedProfile) {
+		shown = &fConnectedProfile;
+		differs = hasSelection
+			&& selected->fName != fConnectedProfile.fName;
+	}
+
 	if (fServerLabel != NULL) {
-		if (hasSelection) {
+		if (shown != NULL) {
 			char buf[128];
 			snprintf(buf, sizeof(buf), "%s:%u",
-				selected->fServer.String(), (unsigned)selected->fPort);
+				shown->fServer.String(), (unsigned)shown->fPort);
 			fServerLabel->SetText(buf);
 		} else {
 			fServerLabel->SetText("\xe2\x80\x94");
@@ -998,14 +1039,20 @@ MainWindow::_RefreshDetails()
 	}
 
 	if (fProtocolLabel != NULL) {
-		fProtocolLabel->SetText(hasSelection
-			? selected->fProtocol.String() : "\xe2\x80\x94");
+		const char* protocol = "\xe2\x80\x94";
+		if (shown != NULL) {
+			if (shown->fProtocol.Length() > 0)
+				protocol = shown->fProtocol.String();
+			else if (shown->fBackendType == VPN_BACKEND_TAILSCALE)
+				protocol = "WireGuard";	// Tailscale tunnels WireGuard
+		}
+		fProtocolLabel->SetText(protocol);
 	}
 
 	if (fBackendLabel != NULL) {
 		const char* backend = "\xe2\x80\x94";
-		if (hasSelection) {
-			switch (selected->fBackendType) {
+		if (shown != NULL) {
+			switch (shown->fBackendType) {
 				case VPN_BACKEND_WIREGUARD:	backend = "WireGuard";	break;
 				case VPN_BACKEND_TAILSCALE:	backend = "Tailscale";	break;
 				case VPN_BACKEND_IPSEC:		backend = "IPSec";		break;
@@ -1013,6 +1060,14 @@ MainWindow::_RefreshDetails()
 			}
 		}
 		fBackendLabel->SetText(backend);
+	}
+
+	if (fConnNotice != NULL) {
+		// Fixed-length, name-free message so a long profile name can never
+		// stretch the window; the connected identity is already shown above.
+		fConnNotice->SetText(differs
+			? "\xe2\x84\xb9 Showing the connected VPN, not the selected profile."
+			: "");
 	}
 
 	if (fActionButton != NULL) {
