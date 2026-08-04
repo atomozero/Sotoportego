@@ -54,9 +54,6 @@ DerpClient::_Fill(size_t need)
 			fBufLen = live;
 		}
 		ssize_t n = fTls.Read(fBuf + fBufLen, sizeof(fBuf) - fBufLen);
-		if (getenv("TS_DP") != NULL)
-			fprintf(stderr, "[dp] derp read n=%zd err=%s\n", n,
-				n < 0 ? fTls.LastError() : "");
 		if (n == -2)
 			continue;	// receive timeout: DERP is quiet, keep waiting -- do
 						// NOT treat an idle relay as a closed connection

@@ -358,16 +358,10 @@ TailscaleBackend::_SendPeerBytes(ts::ManagedPeer* peer, const uint8* buf,
 	size_t len)
 {
 	struct sockaddr_in to;
-	bool dbg = getenv("TS_DP") != NULL;
-	if (peer_sockaddr(peer, to)) {
-		if (dbg) printf("[dp] send %zu B direct\n", len);
+	if (peer_sockaddr(peer, to))
 		fMagicSock.SendTo((struct sockaddr*)&to, sizeof(to), buf, len);
-	} else if (fDerpUp) {
-		if (dbg) printf("[dp] send %zu B via DERP\n", len);
+	else if (fDerpUp)
 		fDerp.SendPacket(peer->wg.NodeKey(), buf, len);
-	} else if (dbg) {
-		printf("[dp] DROP %zu B (no direct path, DERP down)\n", len);
-	}
 }
 
 
@@ -418,9 +412,6 @@ TailscaleBackend::_SendDiscoPing(ts::ManagedPeer* peer)
 	uint8 peerDisco[32];
 	if (!ts::TSIdentity::FromHex(peer->discoKey.String(), peerDisco, 32))
 		return;
-	if (getenv("TS_DP") != NULL)
-		printf("[dp] disco ping -> %s (%zu endpoints)\n",
-			peer->hostname.String(), peer->endpoints.size());
 
 	// A disco ping carries a random txid + our node key; a returning pong
 	// arrives on whichever endpoint worked.
@@ -467,10 +458,6 @@ TailscaleBackend::_HandleDiscoPacket(const uint8* buf, size_t len,
 	inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
 	uint16 port = ntohs(from.sin_port);
 	uint8 type = ts::DiscoMessageType(payload, (size_t)pl);
-	if (getenv("TS_DP") != NULL)
-		printf("[dp] disco %s from %s:%u\n",
-			type == ts::DISCO_PING ? "PING" : type == ts::DISCO_PONG ? "PONG"
-				: "?", ip, port);
 
 	if (type == ts::DISCO_PING) {
 		// Answer with a pong echoing the txid and the source we observed, so the
@@ -696,8 +683,6 @@ TailscaleBackend::_RunDerpReader()
 	uint8 buf[2048];
 	while (!fStopRequested) {
 		ssize_t n = fDerp.RecvPacket(src, buf, sizeof(buf));
-		if (getenv("TS_DP") != NULL && n != 0)
-			printf("[dp] DERP recv %zd B\n", n);
 		if (n < 0)
 			break;		// relay connection dropped
 		if (n == 0)
@@ -803,9 +788,6 @@ TailscaleBackend::_RunTunReader()
 
 		fSessionLock.Lock();
 		ts::ManagedPeer* peer = fSession.Peers().FindByAllowedIP(dst);
-		if (getenv("TS_DP") != NULL)
-			printf("[dp] tun->%s peer=%s\n", dst,
-				peer != NULL ? peer->hostname.String() : "NONE");
 		if (peer != NULL)
 			_SendToPeer(peer, buf, (size_t)n);
 		fSessionLock.Unlock();
@@ -826,8 +808,6 @@ TailscaleBackend::_RunSockReader()
 			continue;	// timeout / interrupted
 
 		ts::SockPacketKind kind = ts::MagicSock::Classify(buf, (size_t)n);
-		if (getenv("TS_DP") != NULL)
-			printf("[dp] sock recv %zd B kind=%d\n", n, (int)kind);
 		if (kind == ts::PKT_WIREGUARD) {
 			_HandleWireGuardPacket(buf, (size_t)n);
 		} else if (kind == ts::PKT_DISCO && ss.ss_family == AF_INET) {
@@ -1089,10 +1069,12 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 		if (!ok)
 			continue;	// skip a malformed message, keep the stream
 
-		// On the first netmap: open the data-plane UDP socket + learn our
-		// endpoint (DERP STUN), bring up the tun with our tailnet address, and
-		// start the packet reader threads.
-		if (!fMagicSock.IsOpen()) {
+		// On the first netmap bring up the data plane: STUN for our public
+		// endpoint, put our tailnet address on the tun, start the packet reader
+		// threads, connect DERP and the MagicDNS resolver. Gated on the tun not
+		// being up yet -- the UDP socket is already open (we opened it before
+		// the MapRequest to advertise our endpoint), so it can't be the flag.
+		if (fTunFd < 0) {
 			_BringUpMagicSock(self);
 			BString selfip = fSession.SelfIPv4();
 			if (fTunInterface.Length() == 0 && selfip.Length() > 0)
@@ -1124,9 +1106,10 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 void
 TailscaleBackend::_BringUpMagicSock(BMessenger& self)
 {
-	if (fMagicSock.IsOpen())
-		return;
-	if (fMagicSock.Open(0) != B_OK) {
+	// The socket may already be open (we open it before the MapRequest to
+	// advertise our endpoint); only Open it if needed, but still run the STUN
+	// endpoint discovery below either way.
+	if (!fMagicSock.IsOpen() && fMagicSock.Open(0) != B_OK) {
 		fprintf(stderr, "[tailscale] magicsock open failed\n");
 		return;
 	}
