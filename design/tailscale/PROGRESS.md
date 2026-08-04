@@ -15,6 +15,23 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Test suite: committed offline self-test (34 checks green)
+- Did: Consolidated the per-iteration verification (previously throwaway
+  scratchpad programs) into a permanent, committed regression suite:
+  `src/backend/tailscale/tests/ts_selftest.cpp` + a `Makefile` (`make test`). It
+  covers the deterministic modules offline — TSIdentity hex + X25519 determinism;
+  NaCl box canonical vectors; HPACK RFC 7541 C.3.1/C.4.1 + encode round-trip;
+  Noise IK handshake key agreement; STUN XOR-MAPPED-ADDRESS parse; disco Ping
+  seal/open; WGPeer type-4 round-trip + replay + initiation format; netmap parse
+  + peer-set reconcile + longest-prefix AllowedIPs routing + MagicDNS resolve;
+  PeerPath DERP-then-upgrade; and the ts2021 initiation framing + control-key
+  parse.
+- Build: **green on-Haiku.** `make test` → **34 passed, 0 failed**. Future changes
+  to any of these modules now have a fast regression check (the live control /
+  STUN / DERP checks remain separate and need network).
+- Next: the on-device packet data-plane threads against a Headscale dev target
+  (STATUS.md runbook) — the one remaining area.
+
 ## 2026-08-04 — Phase 6: AllowedIPs routing (tun → peer lookup)
 - Did: Added `TSPeerSet::FindByAllowedIP` — the outbound routing decision the tun
   reader will make: given a packet's IPv4 destination, find the peer whose

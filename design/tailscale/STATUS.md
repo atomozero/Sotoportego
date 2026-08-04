@@ -52,6 +52,14 @@ Data-plane primitives reused from the WireGuard backend: `WireGuardCrypto`
 (BLAKE2s/X25519/ChaCha20-Poly1305), `TunDevice` (tun bring-up + routes),
 `WireGuardRoutes`.
 
+### Regression suite
+
+`src/backend/tailscale/tests/` holds a committed offline self-test
+(`make test` → 34 checks) over the deterministic modules: crypto vs published
+vectors, wire codecs by round-trip, and netmap/peer/DNS/route logic vs fixtures.
+Run it after touching any of those modules. The live checks (control handshake,
+STUN, DERP) are separate and need network.
+
 ## End-to-end proven against real Tailscale
 
 From this Haiku box, against `controlplane.tailscale.com`: TLS `/key` fetch →
