@@ -31,6 +31,7 @@
 #include <ScrollView.h>
 #include <StringView.h>
 #include <TabView.h>
+#include <Url.h>
 #include <View.h>
 
 #include "CredentialsWindow.h"
@@ -65,11 +66,29 @@ static const uint32 kMsgUptimeTick			= 'gUpT';
 static const uint32 kMsgAddTailscale		= 'gTsA';	// open the Tailscale dialog
 static const uint32 kMsgTailscaleOK			= 'gTsO';	// dialog -> create profile
 static const uint32 kMsgTailscaleSignup		= 'gTsS';	// open the account signup page
+static const uint32 kMsgTailscaleAdmin		= 'gTsD';	// open the web admin console
 
 // Where a new user goes to create a Tailscale account (opens in the browser).
 static const char* const kTailscaleSignupURL = "https://login.tailscale.com/start";
+// The Tailscale web admin console.
+static const char* const kTailscaleAdminURL = "https://login.tailscale.com/admin";
 
 static const char* const kBackendName	= "OpenVPN";
+
+
+// Open a URL in the user's default browser. Uses BUrl's preferred-application
+// path rather than be_roster->Launch("application/x-vnd.Be-URL.https", ...):
+// the latter reports "Application could not be found" on stock Haiku because
+// nothing is registered under that handler MIME, whereas BUrl resolves the
+// https scheme correctly. Returns true on success.
+static bool
+open_url(const char* url)
+{
+	if (url == NULL || *url == '\0')
+		return false;
+	BUrl parsed(url, true);
+	return parsed.OpenWithPreferredApplication(false) == B_OK;
+}
 
 
 // BKeyStore helpers (defined at the bottom of the file).
@@ -152,6 +171,8 @@ MainWindow::_BuildLayout()
 	tailscaleMenu->AddSeparatorItem();
 	tailscaleMenu->AddItem(new BMenuItem("Create a Tailscale account"
 		B_UTF8_ELLIPSIS, new BMessage(kMsgTailscaleSignup)));
+	tailscaleMenu->AddItem(new BMenuItem("Open admin console"
+		B_UTF8_ELLIPSIS, new BMessage(kMsgTailscaleAdmin)));
 	menuBar->AddItem(tailscaleMenu);
 
 	BMenu* toolsMenu = new BMenu("Tools");
@@ -432,14 +453,14 @@ MainWindow::MessageReceived(BMessage* message)
 			break;
 		}
 		case kMsgTailscaleSignup:
-		{
 			// Open the Tailscale signup page in the default web browser so a
 			// new user can create an account, then come back and add it here.
-			char* argv[1];
-			argv[0] = (char*)kTailscaleSignupURL;
-			be_roster->Launch("application/x-vnd.Be-URL.https", 1, argv);
+			open_url(kTailscaleSignupURL);
 			break;
-		}
+		case kMsgTailscaleAdmin:
+			// Open the Tailscale web admin console.
+			open_url(kTailscaleAdminURL);
+			break;
 		case kMsgProfileSelected:
 		{
 			int32 index = fProfileList->CurrentSelection();
@@ -765,10 +786,8 @@ MainWindow::_MaybeOpenAuthURL(const char* detail)
 
 	fLastAuthURL = url;
 	_AppendEvent(BString("Opening login page: ").Append(url).String());
-	// Open the URL with the system's default https handler (the web browser).
-	char* argv[1];
-	argv[0] = (char*)url.String();
-	be_roster->Launch("application/x-vnd.Be-URL.https", 1, argv);
+	// Open the URL in the default web browser.
+	open_url(url.String());
 }
 
 
