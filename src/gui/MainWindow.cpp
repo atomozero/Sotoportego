@@ -619,6 +619,17 @@ MainWindow::_BeginConnectFlow()
 		return;
 	}
 
+	// Tailscale never uses a username/password: it authenticates through the
+	// browser (SSO) or an optional pre-auth key. Skip the credentials prompt
+	// entirely and connect straight away -- _SendConnectWith pulls the auth key
+	// from the keystore if one was set, otherwise the daemon opens the login
+	// URL.
+	if (selected->fBackendType == VPN_BACKEND_TAILSCALE) {
+		fLastUsedStoredCredentials = false;
+		_SendConnectWith(NULL, NULL);
+		return;
+	}
+
 	// If the user previously asked us to remember this profile's password,
 	// skip the dialog and go straight to Connect. The keystore returns
 	// B_ERROR (and may prompt to unlock its keyring) on first access per
