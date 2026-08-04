@@ -69,9 +69,13 @@ static const uint32 kMsgTailscaleSignup		= 'gTsS';	// open the account signup pa
 static const uint32 kMsgTailscaleAdmin		= 'gTsD';	// open the web admin console
 
 // Where a new user goes to create a Tailscale account (opens in the browser).
+// Tailscale has no email/password signup: an account is created by signing in
+// with an identity provider (Google, Microsoft, GitHub, ...) the first time.
+// This is the canonical start page; already-signed-in users get redirected to
+// their admin console.
 static const char* const kTailscaleSignupURL = "https://login.tailscale.com/start";
-// The Tailscale web admin console.
-static const char* const kTailscaleAdminURL = "https://login.tailscale.com/admin";
+// The Tailscale web admin console (current domain: console.tailscale.com).
+static const char* const kTailscaleAdminURL = "https://console.tailscale.com/admin";
 
 static const char* const kBackendName	= "OpenVPN";
 
