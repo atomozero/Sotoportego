@@ -69,7 +69,8 @@ private:
 		// Create and save a Tailscale profile (VPN_BACKEND_TAILSCALE) from the
 		// name + control-server URL the Tailscale dialog collected.
 			void				_CreateTailscaleProfile(const char* name,
-									const char* controlURL);
+									const char* controlURL,
+									const char* authKey);
 			void				_DeleteSelectedProfile();
 			const VPNProfile*	_SelectedProfile() const;
 

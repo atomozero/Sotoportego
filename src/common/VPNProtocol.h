@@ -148,6 +148,9 @@ static const char* const kFieldProfileUsername	= "soto:profile:username";
 static const char* const kFieldProfileConfigPath = "soto:profile:configPath";
 // Transport protocol as a string ("udp" or "tcp"). Defaults to "udp".
 static const char* const kFieldProfileProtocol	= "soto:profile:protocol";
+// Optional Tailscale pre-auth key: when set, the node registers non-
+// interactively instead of opening a browser for SSO login.
+static const char* const kFieldProfileAuthKey	= "soto:profile:authKey";
 
 // VPNGate catalogue fields. A kMsgVPNGateList message carries one nested
 // BMessage per server under kFieldVPNGateServer; each nested message in

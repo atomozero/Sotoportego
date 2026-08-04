@@ -17,7 +17,8 @@ VPNProfile::VPNProfile()
 	fPort(1194),
 	fUsername(""),
 	fProtocol("udp"),
-	fConfigPath("")
+	fConfigPath(""),
+	fAuthKey("")
 {
 }
 
@@ -46,6 +47,8 @@ VPNProfile::Archive(BMessage* into) const
 		result = into->AddString(kFieldProfileProtocol, fProtocol);
 	if (result == B_OK)
 		result = into->AddString(kFieldProfileConfigPath, fConfigPath);
+	if (result == B_OK)
+		result = into->AddString(kFieldProfileAuthKey, fAuthKey);
 
 	return result;
 }
@@ -71,6 +74,8 @@ VPNProfile::Unarchive(const BMessage& from)
 		fProtocol = stringValue;
 	if (from.FindString(kFieldProfileConfigPath, &stringValue) == B_OK)
 		fConfigPath = stringValue;
+	if (from.FindString(kFieldProfileAuthKey, &stringValue) == B_OK)
+		fAuthKey = stringValue;
 
 	return B_OK;
 }

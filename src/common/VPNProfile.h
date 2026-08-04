@@ -49,6 +49,10 @@ public:
 	// Path to the underlying backend config (e.g. an .ovpn file). Stored as
 	// a reference; the file itself stays where the user picked it from.
 			BString				fConfigPath;
+	// Optional Tailscale pre-auth key. When non-empty the node registers
+	// non-interactively (Auth.AuthKey in the RegisterRequest) instead of
+	// handing off to the browser for SSO login. Empty for every other backend.
+			BString				fAuthKey;
 };
 
 

@@ -13,8 +13,9 @@
 #include <TextControl.h>
 
 
-const char* const kFieldTsName	= "soto:gui:tsname";
-const char* const kFieldTsUrl	= "soto:gui:tsurl";
+const char* const kFieldTsName		= "soto:gui:tsname";
+const char* const kFieldTsUrl		= "soto:gui:tsurl";
+const char* const kFieldTsAuthKey	= "soto:gui:tsauthkey";
 
 static const uint32 kMsgAdd		= 'twAd';
 static const uint32 kMsgCancel	= 'twCa';
@@ -33,6 +34,7 @@ TailscaleWindow::TailscaleWindow(BWindow* parent, const BMessenger& target,
 	fOnOK(onOK),
 	fNameField(NULL),
 	fUrlField(NULL),
+	fAuthKeyField(NULL),
 	fAddButton(NULL),
 	fCancelButton(NULL)
 {
@@ -48,6 +50,18 @@ TailscaleWindow::TailscaleWindow(BWindow* parent, const BMessenger& target,
 	// base URL (host or https://host) for self-hosted.
 	fUrlField = new BTextControl("url", "Control server:",
 		kDefaultControlURL, NULL);
+	// Optional pre-auth key. Leave blank to sign in through the browser (SSO);
+	// paste a key from the admin console to register this node non-interactively.
+	fAuthKeyField = new BTextControl("authkey", "Auth key (optional):", "",
+		NULL);
+
+	BStringView* authHint = new BStringView("authhint",
+		"Leave blank to sign in with your browser (Google, Microsoft, "
+		"GitHub\xE2\x80\xA6).");
+	BFont hintFont(be_plain_font);
+	hintFont.SetSize(be_plain_font->Size() - 1);
+	authHint->SetFont(&hintFont);
+	authHint->SetHighColor(tint_color(ui_color(B_PANEL_TEXT_COLOR), 0.7));
 
 	fAddButton = new BButton("add", "Add", new BMessage(kMsgAdd));
 	fAddButton->MakeDefault(true);
@@ -59,6 +73,8 @@ TailscaleWindow::TailscaleWindow(BWindow* parent, const BMessenger& target,
 		.Add(blurb)
 		.Add(fNameField)
 		.Add(fUrlField)
+		.Add(fAuthKeyField)
+		.Add(authHint)
 		.AddGroup(B_HORIZONTAL, B_USE_DEFAULT_SPACING)
 			.AddGlue()
 			.Add(fCancelButton)
@@ -94,9 +110,13 @@ TailscaleWindow::MessageReceived(BMessage* message)
 			if (url.Length() == 0)
 				url = kDefaultControlURL;
 
+			BString authKey(fAuthKeyField->Text());
+			authKey.Trim();
+
 			BMessage reply(fOnOK);
 			reply.AddString(kFieldTsName, name);
 			reply.AddString(kFieldTsUrl, url);
+			reply.AddString(kFieldTsAuthKey, authKey);
 			fTarget.SendMessage(&reply);
 			PostMessage(B_QUIT_REQUESTED);
 			break;

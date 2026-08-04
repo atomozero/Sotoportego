@@ -444,12 +444,15 @@ MainWindow::MessageReceived(BMessage* message)
 		{
 			const char* name = NULL;
 			const char* url = NULL;
+			const char* authKey = NULL;
 			if (message->FindString(kFieldTsName, &name) != B_OK
 					|| name == NULL || *name == '\0')
 				break;
 			if (message->FindString(kFieldTsUrl, &url) != B_OK || url == NULL)
 				url = "controlplane.tailscale.com";
-			_CreateTailscaleProfile(name, url);
+			if (message->FindString(kFieldTsAuthKey, &authKey) != B_OK)
+				authKey = "";
+			_CreateTailscaleProfile(name, url, authKey);
 			break;
 		}
 		case kMsgTailscaleSignup:
@@ -1055,7 +1058,8 @@ MainWindow::_ImportFile(const entry_ref& ref)
 
 
 void
-MainWindow::_CreateTailscaleProfile(const char* name, const char* controlURL)
+MainWindow::_CreateTailscaleProfile(const char* name, const char* controlURL,
+	const char* authKey)
 {
 	if (!fServer.IsValid() || name == NULL || *name == '\0')
 		return;
@@ -1085,6 +1089,9 @@ MainWindow::_CreateTailscaleProfile(const char* name, const char* controlURL)
 	profile.fPort = 443;
 	profile.fProtocol = "";
 	profile.fConfigPath = "";
+	// Optional pre-auth key: empty means browser SSO at Connect time.
+	if (authKey != NULL)
+		profile.fAuthKey = authKey;
 
 	// Optimistically select the new profile once the server echoes the list.
 	fSelectedName = profile.fName;
@@ -1096,8 +1103,11 @@ MainWindow::_CreateTailscaleProfile(const char* name, const char* controlURL)
 	save.AddMessage(kFieldProfile, &archive);
 	fServer.SendMessage(&save);
 
+	bool hasKey = authKey != NULL && *authKey != '\0';
 	_AppendEvent(BString("Added Tailscale network '").Append(name).Append(
-		"' \xe2\x80\x94 select it and click Connect to sign in.").String());
+		hasKey
+			? "' \xe2\x80\x94 select it and click Connect (pre-auth key set)."
+			: "' \xe2\x80\x94 select it and click Connect to sign in.").String());
 }
 
 

@@ -105,7 +105,10 @@ TailscaleBackend::Connect(const VPNProfile& profile)
 	else
 		fControlHost = kDefaultControlHost;
 	fHostname = profile.fName;
-	fAuthKey = "";	// TODO: read an optional pre-auth key from TSConfig
+	// Optional pre-auth key: when the profile carries one, register non-
+	// interactively; otherwise fAuthKey stays empty and we fall back to the
+	// browser SSO flow (register -> AuthURL -> followup poll).
+	fAuthKey = profile.fAuthKey;
 
 	fStopRequested = false;
 	_SetState(VPN_STATE_CONNECTING);

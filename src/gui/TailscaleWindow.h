@@ -18,6 +18,8 @@ class BTextControl;
 // here for self-hosted).
 extern const char* const kFieldTsName;
 extern const char* const kFieldTsUrl;
+// Optional pre-auth key (empty string when the user leaves it blank).
+extern const char* const kFieldTsAuthKey;
 
 
 // A small dialog that creates a Tailscale connection profile. Unlike the
@@ -37,6 +39,7 @@ private:
 			uint32				fOnOK;
 			BTextControl*		fNameField;
 			BTextControl*		fUrlField;
+			BTextControl*		fAuthKeyField;
 			BButton*			fAddButton;
 			BButton*			fCancelButton;
 };
