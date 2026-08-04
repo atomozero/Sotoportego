@@ -78,6 +78,14 @@ TSNetmap::_ParsePeer(const void* jsonNode, NetmapPeer& peer)
 	const JsonValue* allowed = pj.Find("AllowedIPs");
 	if (allowed != NULL)
 		_CollectStrings(allowed, peer.allowedIPs);
+	// Control often omits AllowedIPs when it equals the node's own Addresses
+	// (a plain peer with no subnet routes). Fall back to Addresses so the peer
+	// is both routable (FindByAllowedIP) and shows its tailnet IP.
+	if (peer.allowedIPs.empty()) {
+		const JsonValue* addrs = pj.Find("Addresses");
+		if (addrs != NULL)
+			_CollectStrings(addrs, peer.allowedIPs);
+	}
 	const JsonValue* eps = pj.Find("Endpoints");
 	if (eps != NULL)
 		_CollectStrings(eps, peer.endpoints);
