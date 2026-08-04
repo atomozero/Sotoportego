@@ -15,6 +15,22 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 7: MagicDNS populated from the netmap
+- Did: Added `MagicDns::LoadFromNetmap(TSNetmap)` — rebuilds the resolver's host
+  table and tailnet domain straight from a parsed MapResponse: the domain comes
+  from `DNSConfig.Domains`, and each peer with a hostname maps to its first IPv4
+  tailnet address (first non-IPv6 entry in AllowedIPs, prefix stripped). This is
+  the glue that turns the parsed netmap into working name resolution.
+- Build: **green on-Haiku.** Unit test: loading a fixture netmap (peers `laptop`
+  with `100.64.1.6/32` + an IPv6 AllowedIP, `phone` with `100.64.1.9/32`, domain
+  `tail9f3c.ts.net`) then resolving `laptop.tail9f3c.ts.net` → `100.64.1.6` (the
+  IPv6 entry correctly skipped) and bare `phone` → `100.64.1.9`.
+- Next: the data-plane orchestration that ties everything into a live tunnel —
+  the per-peer Noise IKpsk2 handshake keying each `WGPeer`, the magicsock reader
+  thread (Classify → disco/`PeerPath`/`WGPeer::Decapsulate`), the `tun/N` bring-up
+  with `SelfIPv4()`, and binding MagicDNS on `100.100.100.100:53`. These need a
+  real two-node tailnet (or Headscale) to verify end to end.
+
 ## 2026-08-04 — Phase 7 (start): MagicDNS stub resolver
 - Did: Added `src/backend/tailscale/TSMagicDns.{h,cpp}` — the MagicDNS stub
   resolver's message layer + logic. `DnsParseQuestion` decodes a query's QNAME

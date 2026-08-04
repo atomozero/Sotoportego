@@ -15,6 +15,8 @@
 #include <utility>
 #include <vector>
 
+#include "TSNetmap.h"
+
 
 // MagicDNS: the stub resolver Tailscale binds at 100.100.100.100. It answers A
 // queries for tailnet hostnames (`<host>` or `<host>.<tailnet>.ts.net`) from the
@@ -43,6 +45,12 @@ public:
 			void			SetTailnetDomain(const char* domain);	// e.g. "tailXXXX.ts.net"
 			void			AddHost(const char* hostname, const char* ipv4);
 			void			Clear();
+
+			// Rebuild the host table + tailnet domain from a network map: the
+			// domain comes from DNSConfig, and each peer with a hostname maps to
+			// its first IPv4 tailnet address (from AllowedIPs). Replaces any
+			// previous contents.
+			void			LoadFromNetmap(const TSNetmap& nm);
 
 			// Resolve a DNS query. On a match (A record for a known tailnet
 			// host) writes the response to `out` and returns its length. Returns

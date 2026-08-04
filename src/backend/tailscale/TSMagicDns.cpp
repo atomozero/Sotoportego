@@ -143,6 +143,45 @@ MagicDns::Clear()
 }
 
 
+// Extract the first IPv4 address from a list of CIDR strings ("100.64.1.6/32"),
+// stripping the prefix length; "" if none (skips IPv6).
+static BString
+first_ipv4(const std::vector<BString>& cidrs)
+{
+	for (size_t i = 0; i < cidrs.size(); i++) {
+		if (cidrs[i].FindFirst(':') >= 0)
+			continue;	// IPv6
+		BString ip(cidrs[i]);
+		int slash = ip.FindFirst('/');
+		if (slash >= 0)
+			ip.Truncate(slash);
+		if (ip.Length() > 0)
+			return ip;
+	}
+	return BString("");
+}
+
+
+void
+MagicDns::LoadFromNetmap(const TSNetmap& nm)
+{
+	Clear();
+	const DnsConfig& dns = nm.Dns();
+	if (dns.domains.size() > 0)
+		SetTailnetDomain(dns.domains[0].String());
+
+	const std::vector<NetmapPeer>& peers = nm.Peers();
+	for (size_t i = 0; i < peers.size(); i++) {
+		const NetmapPeer& p = peers[i];
+		if (p.hostname.Length() == 0)
+			continue;
+		BString ip = first_ipv4(p.allowedIPs);
+		if (ip.Length() > 0)
+			AddHost(p.hostname.String(), ip.String());
+	}
+}
+
+
 BString
 MagicDns::_LocalName(const BString& queried) const
 {
