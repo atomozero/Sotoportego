@@ -616,6 +616,11 @@ MainWindow::_UpdateForState(VPNState state, const char* detail)
 	const char* action = (state == VPN_STATE_DISCONNECTED
 		|| state == VPN_STATE_ERROR) ? "Connect" : "Disconnect";
 
+	// A Tailscale profile awaiting interactive login reports its browser
+	// AuthURL in the status detail; open it once so the user can complete login.
+	if (state == VPN_STATE_AUTHENTICATING)
+		_MaybeOpenAuthURL(detail);
+
 	const VPNProfile* selected = _SelectedProfile();
 
 	if (fHeader != NULL) {
@@ -695,6 +700,31 @@ MainWindow::_UpdateForState(VPNState state, const char* detail)
 			alert->Go(NULL);
 		}
 	}
+}
+
+
+void
+MainWindow::_MaybeOpenAuthURL(const char* detail)
+{
+	if (detail == NULL)
+		return;
+	// Extract the first https:// token from the status detail.
+	const char* start = strstr(detail, "https://");
+	if (start == NULL)
+		return;
+	const char* end = start;
+	while (*end != '\0' && *end != ' ' && *end != '\t' && *end != '\n')
+		end++;
+	BString url(start, end - start);
+	if (url.Length() == 0 || url == fLastAuthURL)
+		return;	// already handled this login URL
+
+	fLastAuthURL = url;
+	_AppendEvent(BString("Opening login page: ").Append(url).String());
+	// Open the URL with the system's default https handler (the web browser).
+	char* argv[1];
+	argv[0] = (char*)url.String();
+	be_roster->Launch("application/x-vnd.Be-URL.https", 1, argv);
 }
 
 

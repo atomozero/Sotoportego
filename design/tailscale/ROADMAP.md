@@ -75,9 +75,12 @@ Goal: authenticate to a control server and hold an authorized session.
       controlplane.tailscale.com a fresh node registers and the server returns
       **HTTP 200 with a working `AuthURL`** (`https://login.tailscale.com/a/…`) —
       the interactive browser-login flow, end to end from a Haiku box.
-- [~] Surface `AuthURL` to the daemon → GUI opens the browser; poll to
-      authorized. *(Register + AuthURL retrieval done; the daemon/GUI wiring and
-      the followup poll-to-authorized loop are the remaining integration.)*
+- [x] Surface `AuthURL` to the daemon → GUI opens the browser; poll to
+      authorized. *(Done: `TailscaleBackend` surfaces the AuthURL in the
+      AUTHENTICATING state detail and long-polls `PollAuthorized` to authorized;
+      the GUI (`MainWindow::_MaybeOpenAuthURL`) detects the login URL in the
+      status and opens it once in the default browser via the
+      `application/x-vnd.Be-URL.https` handler.)*
 - **Done when:** against a local **Headscale**, the node registers and shows up
       as authorized in `headscale nodes list`. *(Live-proven against the
       production coordination server; Headscale is the same protocol.)*

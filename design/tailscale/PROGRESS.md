@@ -15,6 +15,20 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 8 (GUI): auto-open the Tailscale login AuthURL
+- Did: `MainWindow::_MaybeOpenAuthURL` — when a status update lands in
+  AUTHENTICATING and its detail carries an `https://…` login URL (the backend's
+  surfaced AuthURL), the GUI extracts it and opens it once in the default browser
+  via `be_roster->Launch("application/x-vnd.Be-URL.https", …)`, logging an event.
+  A `fLastAuthURL` guard prevents relaunching the browser on every repeated
+  status tick. This is the interactive-login affordance Tailscale clients provide.
+- Build: **green on-Haiku** — the GUI links (~510 KB). (BUrl's constructors were
+  ambiguous under this toolchain, so the robust be_roster URL-MIME launch is used
+  instead.)
+- Next: the packet data plane (magicsock reader thread + per-peer WG handshake
+  over PeerPath + tun bring-up + DERP pump), the one part that needs a live
+  two-node tailnet / Headscale to verify end to end.
+
 ## 2026-08-04 — Phase 3: map long-poll wired into TailscaleBackend
 - Did: Wired the network-map loop into the backend worker. After authorization
   (interactive or pre-auth) `TailscaleBackend::_RunMap` opens a `MapStream` on the

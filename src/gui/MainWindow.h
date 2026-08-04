@@ -48,6 +48,10 @@ private:
 			void				_SendDisconnect();
 			void				_UpdateForState(VPNState state,
 									const char* detail);
+		// Open a Tailscale interactive-login AuthURL found in the status detail,
+		// once per distinct URL (fLastAuthURL guards against reopening on every
+		// status tick).
+				void				_MaybeOpenAuthURL(const char* detail);
 			void				_ApplyStats(const BMessage* message);
 			void				_AppendEvent(const char* text);
 	// Rebuild the bottom status-bar line. Called from _UpdateForState
@@ -126,6 +130,10 @@ private:
 	// clear so we don't loop on a stale secret.
 			BString					fLastConnectProfile;
 			bool					fLastUsedStoredCredentials;
+
+		// The last Tailscale AuthURL we opened, so the browser isn't relaunched
+		// on every AUTHENTICATING status update carrying the same URL.
+			BString					fLastAuthURL;
 };
 
 
