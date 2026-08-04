@@ -51,6 +51,7 @@ SRCS = \
 	../backend/tailscale/PeerPath.cpp \
 	../backend/tailscale/TSMagicDns.cpp \
 	../backend/tailscale/TSPeerSet.cpp \
+	../backend/tailscale/TSSessionState.cpp \
 	../backend/tailscale/TSTls.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/WireGuardConfigParser.cpp \

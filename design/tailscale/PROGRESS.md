@@ -15,6 +15,25 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 3: SessionState — one MapResponse handler for the data plane
+- Did: Added `src/backend/tailscale/TSSessionState.{h,cpp}` — `SessionState`
+  bundles the netmap-derived data-plane view (`TSNetmap` + `TSPeerSet` +
+  `MagicDns` + self IPv4) behind a single `ApplyMapResponse(json)` that the map
+  long-poll calls per streamed message: it parses the netmap, reconciles the
+  WireGuard peer set (add/remove/update with per-peer `WGPeer`+`PeerPath`),
+  reloads the MagicDNS table, and refreshes our tailnet address — so the whole
+  data plane re-derives from one place.
+- Build: **green on-Haiku.** Unit test across two fixture MapResponses: the first
+  yields 2 peers (+2), self `100.64.7.1`, MagicDNS `laptop → 100.64.7.2`, the
+  DERP `nyc` region present, and peer `aa` starting on the DERP path; the second
+  (phone gone) reconciles to 1 peer (−1). The netmap → peers → DNS → self-IP
+  integration is verified end to end (minus live packet I/O).
+- Next: the live I/O layer — a `MapStream` long-poll loop feeding
+  `ApplyMapResponse`, the magicsock reader thread doing per-peer handshake +
+  `WGPeer` transport over the chosen `PeerPath`, DERP relay pumping, and the
+  `tun/N` bring-up with `SelfIPv4()`. This is the part that needs a live two-node
+  tailnet / Headscale to verify, per the design's dev-target note.
+
 ## 2026-08-04 — Phase 3/6: WGPeer WireGuard handshake (initiator)
 - Did: Gave `WGPeer` the per-peer Noise IKpsk2 handshake, ported from
   WireGuardBackend so a Tailscale peer is now a self-contained WireGuard engine.
