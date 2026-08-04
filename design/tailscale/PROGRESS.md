@@ -15,6 +15,25 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Milestone: STATUS.md capstone + full-daemon build check
+- Did: Confirmed the whole daemon still links on Haiku with all 24 Tailscale
+  modules compiled in (`sotoportego_server`, ~400 KB). Added
+  `design/tailscale/STATUS.md` — a navigable capstone: a per-module map with how
+  each was verified (live / vector / fixture / round-trip / builds), the
+  end-to-end control-plane result proven against production Tailscale, the single
+  remaining area (the packet data-plane threads), and a Headscale runbook to
+  finish + verify it non-interactively via a pre-auth key.
+- Build: **green on-Haiku.** Nothing new to run — this iteration consolidates
+  ~two dozen verified modules into one overview.
+- State of the project: the entire Tailscale control plane and every data-plane
+  building block are implemented and individually verified (control plane live
+  against controlplane.tailscale.com incl. a real AuthURL; NaCl/HPACK vs vectors;
+  STUN/DERP live; netmap/peers/DNS/paths via fixtures; WGPeer transport
+  round-trip). What's left is the threaded on-device packet path
+  (tun ↔ WGPeer ↔ magicsock/DERP), which needs a live two-node tailnet / Headscale
+  to develop and validate — see STATUS.md.
+- Next: implement the magicsock/tun reader threads against a Headscale dev target.
+
 ## 2026-08-04 — Phase 8 (GUI): auto-open the Tailscale login AuthURL
 - Did: `MainWindow::_MaybeOpenAuthURL` — when a status update lands in
   AUTHENTICATING and its detail carries an `https://…` login URL (the backend's
