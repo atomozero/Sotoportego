@@ -12,6 +12,7 @@
 
 #include "TSControl.h"			// kControlProtocolVersion
 #include "TSControlSession.h"
+#include "TSMap.h"
 #include "TSRegister.h"
 
 
@@ -19,6 +20,7 @@
 static const uint32 kMsgTsAuthURL		= 'tsAu';	// "url"
 static const uint32 kMsgTsAuthorized	= 'tsOk';
 static const uint32 kMsgTsFailed		= 'tsEr';	// "detail" (empty == stopped)
+static const uint32 kMsgTsNetmap		= 'tsNm';	// "peers" int32, "selfip"
 
 // Default coordination server when a profile doesn't name one.
 static const char* const kDefaultControlHost = "controlplane.tailscale.com";
@@ -159,14 +161,30 @@ TailscaleBackend::MessageReceived(BMessage* message)
 		}
 
 		case kMsgTsAuthorized:
-			// The control side is authorized, but the data plane (network map →
-			// WireGuard peers, Phase 3+) isn't built yet, so we can't carry
-			// traffic. Report that honestly rather than a false CONNECTED.
-			fWorker = -1;
-			_SetState(VPN_STATE_ERROR,
-				"Authorized. Data plane (network map / peers) not implemented "
-				"yet -- see design/tailscale ROADMAP Phase 3+.");
+			// Control authorized; the worker now long-polls the network map.
+			printf("[tailscale] node authorized; fetching network map\n");
+			_SetState(VPN_STATE_AUTHENTICATING, "authorized -- fetching network map");
 			break;
+
+		case kMsgTsNetmap:
+		{
+			// A MapResponse was applied. Report the netmap summary. The packet
+			// data plane (magicsock reader + tun) isn't wired yet, so this is
+			// not a full CONNECTED tunnel -- reflect that in the detail.
+			int32 peers = 0;
+			const char* selfip = NULL;
+			message->FindInt32("peers", &peers);
+			if (message->FindString("selfip", &selfip) == B_OK && selfip != NULL)
+				fLocalIP = selfip;
+			BString detail;
+			detail.SetToFormat("netmap: %d peer%s%s%s (data plane pending)",
+				(int)peers, peers == 1 ? "" : "s",
+				(selfip && *selfip) ? ", self " : "",
+				(selfip && *selfip) ? selfip : "");
+			printf("[tailscale] %s\n", detail.String());
+			_SetState(VPN_STATE_AUTHENTICATING, detail.String());
+			break;
+		}
 
 		case kMsgTsFailed:
 		{
@@ -255,6 +273,7 @@ TailscaleBackend::_RunControlFlow()
 	}
 	if (res.machineAuthorized) {
 		self.SendMessage(kMsgTsAuthorized);
+		_RunMap(session, self);
 		return 0;
 	}
 	if (res.authURL.Length() == 0) {
@@ -294,6 +313,7 @@ TailscaleBackend::_RunControlFlow()
 		}
 		if (pr.machineAuthorized) {
 			self.SendMessage(kMsgTsAuthorized);
+			_RunMap(session, self);
 			return 0;
 		}
 		if (pr.authURL.Length() > 0)
@@ -304,6 +324,55 @@ TailscaleBackend::_RunControlFlow()
 	m.AddString("detail", "");	// stopped
 	self.SendMessage(&m);
 	return 0;
+}
+
+
+void
+TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
+{
+	uint16 version = ts::kControlProtocolVersion;
+
+	ts::MapStream map;
+	int status = 0;
+	status_t result = map.Begin(session.Http2(), fControlHost.String(), version,
+		fIdentity.NodePublic(), fHostname.String(), &status);
+	if (result != B_OK || status != 200) {
+		BMessage m(kMsgTsFailed);
+		BString detail;
+		detail.SetToFormat("network map request failed (HTTP %d)", status);
+		m.AddString("detail", detail.String());
+		self.SendMessage(&m);
+		return;
+	}
+
+	// Stream MapResponses: the first is the full snapshot, then deltas. Apply
+	// each to the session state and post a netmap summary.
+	BString msg;
+	while (!fStopRequested) {
+		status_t r = map.ReadMessage(msg);
+		if (r == B_ENTRY_NOT_FOUND)
+			break;	// clean end of stream
+		if (r != B_OK) {
+			if (fStopRequested)
+				break;
+			// A read error (e.g. control drop) ends the map session.
+			BMessage m(kMsgTsFailed);
+			m.AddString("detail", "network map stream ended");
+			self.SendMessage(&m);
+			return;
+		}
+		if (!fSession.ApplyMapResponse(msg.String(), msg.Length()))
+			continue;	// skip a malformed message, keep the stream
+
+		BMessage nm(kMsgTsNetmap);
+		nm.AddInt32("peers", fSession.PeerCount());
+		nm.AddString("selfip", fSession.SelfIPv4());
+		self.SendMessage(&nm);
+	}
+
+	BMessage done(kMsgTsFailed);
+	done.AddString("detail", "");	// stopped
+	self.SendMessage(&done);
 }
 
 

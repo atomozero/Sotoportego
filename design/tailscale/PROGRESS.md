@@ -15,6 +15,26 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 3: map long-poll wired into TailscaleBackend
+- Did: Wired the network-map loop into the backend worker. After authorization
+  (interactive or pre-auth) `TailscaleBackend::_RunMap` opens a `MapStream` on the
+  live ts2021 HTTP/2 connection and streams `MapResponse`s, applying each to the
+  member `SessionState` (peers + MagicDNS + self IP) and posting a `kMsgTsNetmap`
+  summary (peer count + self address) back to the looper; `MessageReceived`
+  surfaces it via state detail (`netmap: N peers, self 100.x (data plane
+  pending)`) and sets `LocalIP`. Replaced the old "authorized → ERROR" stub with
+  this real control→netmap flow; the loop honours the stop flag and reports a
+  clean end.
+- Build: **green on-Haiku**, daemon links (~400 KB). The map endpoint is gated on
+  an authorized node, so the live snapshot needs a browser login or a Headscale
+  pre-auth key; every piece the loop drives (`MapStream` framing, `TSNetmap`,
+  `TSPeerSet`, `MagicDns`, `SessionState`) is already unit/live-verified, so this
+  is the observable control→netmap integration point in the daemon.
+- Next: the packet data plane — a magicsock reader thread doing the per-peer
+  WireGuard handshake over the chosen `PeerPath` (direct/DERP), `WGPeer`
+  encap/decap between `tun/N` and the socket, DERP relay pumping, and the `tun/N`
+  bring-up with `SelfIPv4()`. Verified against a live two-node tailnet / Headscale.
+
 ## 2026-08-04 — Phase 3: SessionState — one MapResponse handler for the data plane
 - Did: Added `src/backend/tailscale/TSSessionState.{h,cpp}` — `SessionState`
   bundles the netmap-derived data-plane view (`TSNetmap` + `TSPeerSet` +

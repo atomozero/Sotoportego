@@ -13,6 +13,9 @@
 #include "VPNStats.h"
 
 #include "TSIdentity.h"
+#include "TSSessionState.h"
+
+namespace ts { class ControlSession; }
 
 
 // Tailscale backend -- full, in-process Tailscale ("level C"), built from
@@ -59,6 +62,11 @@ private:
 			void				_StartWorker();
 	static	int32				_WorkerEntry(void* self);
 			int32				_RunControlFlow();
+	// After authorization, long-poll the network map on the session's HTTP/2
+	// connection, applying each MapResponse to fSession and posting netmap
+	// summaries back to the looper. Returns when stopped or the stream ends.
+			void				_RunMap(ts::ControlSession& session,
+										BMessenger& self);
 			void				_StopWorker();
 
 			VPNState			fState;
@@ -79,6 +87,9 @@ private:
 
 			thread_id			fWorker;		// -1 when none
 			bool				fStopRequested;
+
+			// The netmap-derived data-plane state, updated by the map loop.
+			ts::SessionState	fSession;
 };
 
 
