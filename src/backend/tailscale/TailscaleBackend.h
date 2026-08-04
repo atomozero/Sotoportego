@@ -106,6 +106,13 @@ private:
 	// Probe a peer's candidate endpoints with a disco ping (throttled), so a
 	// returning pong can upgrade its path off DERP. Caller holds fSessionLock.
 			void				_SendDiscoPing(ts::ManagedPeer* peer);
+
+	// MagicDNS: a UDP:53 resolver bound to our tailnet address that answers
+	// tailnet names from the netmap and forwards the rest to an upstream.
+			void				_StartMagicDns();
+			void				_StopMagicDns();
+	static	int32				_DnsEntry(void* self);
+			int32				_RunDnsServer();
 	// Encapsulate + send `packet` to `peer` on its current path (direct UDP for
 	// now); lazily initiates a handshake if the peer has no transport keys yet.
 	// Caller holds fSessionLock.
@@ -151,6 +158,8 @@ private:
 			thread_id			fTunReader;		// -1 when none
 			thread_id			fSockReader;	// -1 when none
 			thread_id			fDerpReader;	// -1 when none
+			int					fDnsFd;			// MagicDNS UDP:53, -1 when none
+			thread_id			fDnsThread;		// -1 when none
 			BLocker				fSessionLock;
 
 			// DERP relay for the home region (fallback path).

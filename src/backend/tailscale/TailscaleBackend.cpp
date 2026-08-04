@@ -54,6 +54,8 @@ TailscaleBackend::TailscaleBackend()
 	fTunReader(-1),
 	fSockReader(-1),
 	fDerpReader(-1),
+	fDnsFd(-1),
+	fDnsThread(-1),
 	fSessionLock("ts session"),
 	fDerpUp(false)
 {
@@ -460,6 +462,124 @@ TailscaleBackend::_HandleWireGuardPacket(const uint8* buf, size_t len)
 
 
 void
+TailscaleBackend::_StartMagicDns()
+{
+	if (fDnsFd >= 0)
+		return;
+	BString selfIP = fSession.SelfIPv4();
+	if (selfIP.Length() == 0)
+		return;
+
+	int sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sock < 0)
+		return;
+	struct sockaddr_in addr;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(53);
+	// Bind to our tailnet address so lookups aimed at this node's resolver land
+	// here. (Tailscale's canonical 100.100.100.100 needs that alias on the tun;
+	// binding our own 100.x is the portable choice on Haiku.)
+	inet_pton(AF_INET, selfIP.String(), &addr.sin_addr);
+	if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+		close(sock);
+		fprintf(stderr, "[tailscale] MagicDNS bind %s:53 failed\n",
+			selfIP.String());
+		return;
+	}
+	struct timeval tv;
+	tv.tv_sec = 1;
+	tv.tv_usec = 0;
+	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	fDnsFd = sock;
+
+	fDnsThread = spawn_thread(_DnsEntry, "tailscale-dns", B_NORMAL_PRIORITY,
+		this);
+	if (fDnsThread >= 0)
+		resume_thread(fDnsThread);
+	printf("[tailscale] MagicDNS resolver on %s:53\n", selfIP.String());
+}
+
+
+void
+TailscaleBackend::_StopMagicDns()
+{
+	if (fDnsFd >= 0) {
+		close(fDnsFd);
+		fDnsFd = -1;
+	}
+	if (fDnsThread >= 0) {
+		status_t ignored;
+		wait_for_thread(fDnsThread, &ignored);
+		fDnsThread = -1;
+	}
+}
+
+
+int32
+TailscaleBackend::_DnsEntry(void* self)
+{
+	return ((TailscaleBackend*)self)->_RunDnsServer();
+}
+
+
+int32
+TailscaleBackend::_RunDnsServer()
+{
+	while (!fStopRequested) {
+		uint8 query[1500];
+		struct sockaddr_in from;
+		socklen_t fl = sizeof(from);
+		ssize_t n = recvfrom(fDnsFd, query, sizeof(query), 0,
+			(struct sockaddr*)&from, &fl);
+		if (n <= 0)
+			continue;	// timeout
+
+		// Answer tailnet names locally; forward everything else upstream.
+		uint8 resp[1500];
+		ssize_t rn;
+		fSessionLock.Lock();
+		rn = fSession.Dns().Resolve(query, (size_t)n, resp, sizeof(resp));
+		BString upstream;
+		if (rn == 0 && !fSession.Netmap().Dns().resolvers.empty())
+			upstream = fSession.Netmap().Dns().resolvers[0];
+		fSessionLock.Unlock();
+
+		if (rn > 0) {
+			sendto(fDnsFd, resp, rn, 0, (struct sockaddr*)&from, fl);
+			continue;
+		}
+		if (rn < 0 || upstream.Length() == 0)
+			continue;	// malformed, or no upstream to forward to
+
+		// Forward to the upstream resolver on a transient socket and relay the
+		// reply back to the original client.
+		int us = socket(AF_INET, SOCK_DGRAM, 0);
+		if (us < 0)
+			continue;
+		struct timeval tv;
+		tv.tv_sec = 4;
+		tv.tv_usec = 0;
+		setsockopt(us, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+		struct sockaddr_in up;
+		memset(&up, 0, sizeof(up));
+		up.sin_family = AF_INET;
+		up.sin_port = htons(53);
+		if (inet_pton(AF_INET, upstream.String(), &up.sin_addr) == 1
+				&& sendto(us, query, n, 0, (struct sockaddr*)&up, sizeof(up))
+					== n) {
+			uint8 reply[1500];
+			ssize_t rl = recv(us, reply, sizeof(reply), 0);
+			if (rl > 0)
+				sendto(fDnsFd, reply, rl, 0, (struct sockaddr*)&from, fl);
+		}
+		close(us);
+	}
+	return 0;
+}
+
+
+void
 TailscaleBackend::_BringUpDerp()
 {
 	if (fDerpUp)
@@ -540,6 +660,7 @@ void
 TailscaleBackend::_StopDataPlane()
 {
 	fStopRequested = true;
+	_StopMagicDns();
 	// Closing the socket/tun unblocks the readers; they also poll the flag.
 	if (fTunReader >= 0) {
 		status_t ignored;
@@ -834,6 +955,7 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 			if (fMagicSock.IsOpen() && fTunFd < 0 && fTunNode.Length() > 0)
 				_StartDataPlane();
 			_BringUpDerp();
+			_StartMagicDns();
 		}
 
 		BMessage nm(kMsgTsNetmap);
