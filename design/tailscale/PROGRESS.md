@@ -15,6 +15,26 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 3/5 bridge: WGPeer transport unit (round-trip verified)
+- Did: Added `src/backend/tailscale/WGPeer.{h,cpp}` — one WireGuard peer's
+  data-plane transport, factored out of WireGuardBackend so the Tailscale backend
+  can run N peers keyed by node key. It owns the per-direction transport keys, the
+  send counter, the peer's receiver index and an RFC 6479 anti-replay window, and
+  frames plaintext IP packets into WireGuard type-4 transport messages
+  (`[4][000][recvIndex LE][counter LE][ChaCha20-Poly1305(padded)]`) and back,
+  stripping the 16-byte padding via the IP header length. `SetTransport` installs
+  the keys a completed handshake produced; the send path (direct vs. DERP) stays
+  magicsock's concern.
+- Build: **green on-Haiku.** Unit test (symmetric keys, loopback): a 20-byte IPv4
+  packet encapsulates and decapsulates back byte-for-byte with the padding
+  stripped; the receiver index serialises little-endian; anti-replay rejects a
+  re-submitted counter; a 0-length keepalive round-trips to length 0; and a
+  flipped ciphertext byte fails to authenticate.
+- Next: give `WGPeer` the per-peer Noise IKpsk2 handshake + rekey (shared with
+  WireGuardBackend), then the magicsock reader thread wiring: dispatch inbound WG
+  datagrams to the matching peer's `Decapsulate`, send via the chosen path, and
+  bring up a `tun/N` slot with `TSNetmap::SelfIPv4()` so packets actually flow.
+
 ## 2026-08-04 — Phase 5: magicsock STUN sweep (live reflexive endpoint)
 - Did: Added `MagicSock::DiscoverEndpoint` — the STUN sweep run over the *shared*
   magicsock UDP socket (not a throwaway one), so the reflexive ip:port it learns
