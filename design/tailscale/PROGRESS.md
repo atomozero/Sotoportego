@@ -15,6 +15,27 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 6 (start): PeerPath DERP-then-upgrade state machine
+- Did: Added `src/backend/tailscale/PeerPath.{h,cpp}` — the per-peer send-path
+  decision state, and embedded it in `ManagedPeer`. It encodes Tailscale's
+  DERP-then-upgrade policy: a peer starts on its home DERP relay (traffic from
+  t=0), upgrades to a direct UDP endpoint when a disco pong confirms one, keeps
+  the direct path while it sees activity, and `Evaluate` falls back to DERP if the
+  direct path goes silent past a threshold (keeping the endpoint so a later pong
+  re-upgrades cheaply). `TSPeerSet::Update` now puts a peer on DERP as soon as the
+  netmap gives it a home region, without ever downgrading a live direct path.
+- Build: **green on-Haiku.** Unit test with a deterministic clock: starts on DERP;
+  upgrades to `203.0.113.7:41641` on a pong; a netmap re-advertise (`UseDerp`)
+  does not downgrade the live direct path; the direct path holds while active
+  (activity resets the staleness timer); after >5s of silence it falls back to
+  DERP; and a fresh pong re-upgrades. All transitions correct.
+- Next: drive it for real — the magicsock reader thread sends disco pings to a
+  peer's candidate endpoints, feeds returning pongs into `UpgradeToDirect`, notes
+  inbound direct traffic via `NoteDirectActivity`, and a keepalive timer calls
+  `Evaluate`; the peer's send then goes direct (`SendTo`) or via the
+  `DerpClient`. Plus the per-peer Noise IKpsk2 handshake to key each `WGPeer`, and
+  the `tun/N` bring-up with `SelfIPv4()`.
+
 ## 2026-08-04 — Phase 3/5 bridge: TSPeerSet (netmap → data-plane peers)
 - Did: Added `src/backend/tailscale/TSPeerSet.{h,cpp}` — the live peer set driven
   by the network map. `Update(TSNetmap)` diffs each MapResponse into a set of

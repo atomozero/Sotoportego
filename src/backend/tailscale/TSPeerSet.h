@@ -11,6 +11,7 @@
 
 #include <vector>
 
+#include "PeerPath.h"
 #include "TSNetmap.h"
 #include "WGPeer.h"
 
@@ -31,6 +32,7 @@ struct ManagedPeer {
 	std::vector<BString>	allowedIPs;		// CIDRs routed to this peer
 	std::vector<BString>	endpoints;		// direct-path candidates
 	WGPeer					wg;				// per-peer WireGuard transport
+	PeerPath				path;			// DERP-vs-direct send-path state
 
 							ManagedPeer() : online(false), derpRegion(-1) {}
 };

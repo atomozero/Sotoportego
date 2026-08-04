@@ -153,10 +153,15 @@ Goal: packets flow between two tailnet nodes via relay.
 ## Phase 6 — Direct paths & NAT traversal (the real magic)
 Goal: upgrade DERP relays to peer-to-peer UDP.
 
-- [ ] disco ping/pong sweep across candidate endpoints; pick a working direct
+- [~] disco ping/pong sweep across candidate endpoints; pick a working direct
       path and switch the peer's send address off DERP.
-- [ ] Keepalive + path failure detection; fall back to DERP when a direct path
+      *(The per-peer decision state `PeerPath` (DERP-then-upgrade) is done and
+      unit-verified. Remaining: actually driving the disco ping sweep over
+      magicsock and feeding pongs into `UpgradeToDirect`.)*
+- [~] Keepalive + path failure detection; fall back to DERP when a direct path
       dies. Endpoint set changes trigger a `MapRequest` update.
+      *(`PeerPath::Evaluate` does the stale-direct→DERP fallback; wiring the
+      keepalive timer + endpoint-change MapRequest is the remaining part.)*
 - **Done when:** after the DERP-relayed ping, the path upgrades to direct UDP
       (verify: relay counters stop climbing; latency drops; traffic on the raw
       UDP socket, not DERP).

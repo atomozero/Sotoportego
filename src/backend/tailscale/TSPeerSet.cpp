@@ -60,6 +60,8 @@ TSPeerSet::Update(const TSNetmap& nm, int* outAdded, int* outRemoved,
 			mp.derpRegion = np.derpRegion;
 			mp.allowedIPs = np.allowedIPs;
 			mp.endpoints = np.endpoints;
+			if (np.derpRegion >= 0)
+				mp.path.UseDerp();
 			seen[idx] = true;
 			updated++;
 		} else {
@@ -74,6 +76,8 @@ TSPeerSet::Update(const TSNetmap& nm, int* outAdded, int* outRemoved,
 			uint8 raw[32];
 			if (TSIdentity::FromHex(np.nodeKey.String(), raw, 32))
 				mp.wg.SetNodeKey(raw);
+			if (np.derpRegion >= 0)
+				mp.path.UseDerp();
 			fPeers.push_back(mp);
 			added++;
 		}
