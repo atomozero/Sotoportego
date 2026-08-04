@@ -134,8 +134,13 @@ Goal: packets flow between two tailnet nodes via relay.
       frameClientInfo (node pub + nonce + NaCl-boxed JSON) accepted. Frame codec
       (`[type][BE32 len][payload]`) + `SendPacket`/`RecvPacket` (with PING→PONG)
       implemented. Relaying real packets end-to-end needs a second node.)*
-- [ ] `MagicSock`: one UDP socket demuxing STUN/disco/WireGuard; route peer
+- [~] `MagicSock`: one UDP socket demuxing STUN/disco/WireGuard; route peer
       sends through DERP when no direct path exists.
+      *(Socket (bind/send/recv, ephemeral port, recv timeout) + the inbound
+      `Classify` (disco magic → STUN cookie → else WireGuard) done and verified:
+      classifier unit checks pass and a loopback UDP round-trip demuxes all three
+      kinds. Remaining: the reader thread, STUN sweep, disco probing and per-peer
+      direct-vs-DERP send-path selection.)*
 - [ ] Wire DERP send/recv into the `WGPeer` transport path.
 - **Done when:** two nodes on a Headscale tailnet `ping` each other's `100.x`
       address **through DERP** (confirm via DERP server counters / logs).

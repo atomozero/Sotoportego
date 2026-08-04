@@ -15,6 +15,24 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 5: magicsock UDP socket + inbound classifier
+- Did: Added `src/backend/tailscale/MagicSock.{h,cpp}` — the single UDP socket
+  that carries all peer traffic. Bind (ephemeral or fixed port, with a 1s recv
+  timeout so a reader loop can poll a stop flag), `SendTo`/`Recv`, and the
+  inbound `Classify` that demuxes each datagram by its leading bytes: the 6-byte
+  disco magic `TS💬` → PKT_DISCO; the STUN magic cookie at offset 4 with the top
+  two bits of byte 0 clear → PKT_STUN; everything else (WireGuard transport, type
+  byte 1..4) → PKT_WIREGUARD.
+- Build: **green on-Haiku.** Unit test: the classifier tags crafted disco / STUN /
+  WireGuard datagrams correctly, and a loopback round-trip (bind an ephemeral
+  port, sendto ourselves, recv) demuxes all three kinds — the real socket path
+  works, not just the pure function.
+- Next: the magicsock reader thread + endpoint/probe machinery — run the STUN
+  sweep over this socket (send `TSStun` binding requests to DERP STUN, collect
+  the reflexive endpoints), drive `TSDisco` ping/pong to candidate endpoints, and
+  maintain each peer's send path (a direct `sockaddr` once a disco pong returns,
+  else via the `DerpClient`). Then bridge to the WireGuard transport (`WGPeer`).
+
 ## 2026-08-04 — Phase 5 (start): DERP client handshake works live
 - Did: Added `src/backend/tailscale/TSDerp.{h,cpp}` — a DERP relay client. Pulled
   the wire protocol from tailscale/derp + derphttp: an HTTP `GET /derp` upgrade
