@@ -22,6 +22,8 @@ SRCS = \
 	SotoportegoApp.cpp \
 	MainWindow.cpp \
 	HeaderView.cpp \
+	AboutWindow.cpp \
+	ClickableStringView.cpp \
 	CredentialsWindow.cpp \
 	TailscaleWindow.cpp \
 	MetricPill.cpp \
