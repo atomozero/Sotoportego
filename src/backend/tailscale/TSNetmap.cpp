@@ -58,67 +58,158 @@ TSNetmap::_CollectStrings(const void* jsonArray, std::vector<BString>& out)
 
 
 bool
+TSNetmap::_ParsePeer(const void* jsonNode, NetmapPeer& peer)
+{
+	const JsonValue& pj = *(const JsonValue*)jsonNode;
+	if (!pj.IsObject())
+		return false;
+
+	const JsonValue* id = pj.Find("ID");
+	if (id != NULL)
+		peer.nodeID = (int64)id->AsNumber(0);
+
+	const JsonValue* key = pj.Find("Key");
+	if (key != NULL && key->IsString())
+		peer.nodeKey = _StripKeyPrefix(key->stringValue.String());
+	const JsonValue* disco = pj.Find("DiscoKey");
+	if (disco != NULL && disco->IsString())
+		peer.discoKey = _StripKeyPrefix(disco->stringValue.String());
+
+	const JsonValue* allowed = pj.Find("AllowedIPs");
+	if (allowed != NULL)
+		_CollectStrings(allowed, peer.allowedIPs);
+	const JsonValue* eps = pj.Find("Endpoints");
+	if (eps != NULL)
+		_CollectStrings(eps, peer.endpoints);
+
+	const JsonValue* derp = pj.Find("DERP");
+	if (derp != NULL && derp->IsString())
+		peer.derpRegion = _ParseDerp(derp->stringValue.String());
+
+	const JsonValue* online = pj.Find("Online");
+	if (online != NULL)
+		peer.online = online->AsBool(false);
+
+	const JsonValue* hi = pj.Find("Hostinfo");
+	if (hi != NULL && hi->IsObject()) {
+		const JsonValue* hn = hi->Find("Hostname");
+		if (hn != NULL && hn->IsString())
+			peer.hostname = hn->stringValue;
+	}
+
+	// A peer with no key is unusable.
+	return peer.nodeKey.Length() > 0;
+}
+
+
+void
+TSNetmap::_UpsertPeer(const NetmapPeer& peer)
+{
+	for (size_t i = 0; i < fPeers.size(); i++) {
+		bool sameId = peer.nodeID != 0 && fPeers[i].nodeID == peer.nodeID;
+		bool sameKey = fPeers[i].nodeKey == peer.nodeKey;
+		if (sameId || sameKey) {
+			fPeers[i] = peer;
+			return;
+		}
+	}
+	fPeers.push_back(peer);
+}
+
+
+bool
 TSNetmap::Parse(const char* json, size_t len)
 {
-	fSelfAddresses.clear();
-	fPeers.clear();
-	fDerpRegions.clear();
-	fDns.resolvers.clear();
-	fDns.domains.clear();
-
 	JsonValue root;
 	if (!JsonParser::Parse(json, len, root) || !root.IsObject())
 		return false;
+
+	// A MapResponse is either a full snapshot or a delta: only the sections
+	// actually present are updated, everything else is left as-is. Clearing
+	// unconditionally (the old behaviour) wiped the peer set on every keepalive
+	// and every delta, so a peer that arrived via "PeersChanged" never stuck.
 
 	// Our own node: Node.Addresses are the tailnet CIDRs to put on the tun.
 	const JsonValue* self = root.Find("Node");
 	if (self != NULL && self->IsObject()) {
 		const JsonValue* addrs = self->Find("Addresses");
-		if (addrs != NULL)
+		if (addrs != NULL) {
+			fSelfAddresses.clear();
 			_CollectStrings(addrs, fSelfAddresses);
+		}
 	}
 
-	// Peers: each carries the WireGuard identity + reachability.
+	// "Peers": a full peer-list snapshot (first response). Replace the set.
 	const JsonValue* peers = root.Find("Peers");
 	if (peers != NULL && peers->IsArray()) {
+		fPeers.clear();
 		for (size_t i = 0; i < peers->arrayValue.size(); i++) {
-			const JsonValue& pj = peers->arrayValue[i];
-			if (!pj.IsObject())
-				continue;
-
 			NetmapPeer peer;
-			const JsonValue* key = pj.Find("Key");
-			if (key != NULL && key->IsString())
-				peer.nodeKey = _StripKeyPrefix(key->stringValue.String());
-			const JsonValue* disco = pj.Find("DiscoKey");
-			if (disco != NULL && disco->IsString())
-				peer.discoKey = _StripKeyPrefix(disco->stringValue.String());
-
-			const JsonValue* allowed = pj.Find("AllowedIPs");
-			if (allowed != NULL)
-				_CollectStrings(allowed, peer.allowedIPs);
-			const JsonValue* eps = pj.Find("Endpoints");
-			if (eps != NULL)
-				_CollectStrings(eps, peer.endpoints);
-
-			const JsonValue* derp = pj.Find("DERP");
-			if (derp != NULL && derp->IsString())
-				peer.derpRegion = _ParseDerp(derp->stringValue.String());
-
-			const JsonValue* online = pj.Find("Online");
-			if (online != NULL)
-				peer.online = online->AsBool(false);
-
-			const JsonValue* hi = pj.Find("Hostinfo");
-			if (hi != NULL && hi->IsObject()) {
-				const JsonValue* hn = hi->Find("Hostname");
-				if (hn != NULL && hn->IsString())
-					peer.hostname = hn->stringValue;
-			}
-
-			// A peer with no key is unusable; skip it.
-			if (peer.nodeKey.Length() > 0)
+			if (_ParsePeer(&peers->arrayValue[i], peer))
 				fPeers.push_back(peer);
+		}
+	}
+
+	// "PeersChanged": full tailcfg.Node objects for peers that were added or
+	// changed (e.g. a device you just joined to the tailnet). Upsert each.
+	const JsonValue* changed = root.Find("PeersChanged");
+	if (changed != NULL && changed->IsArray()) {
+		for (size_t i = 0; i < changed->arrayValue.size(); i++) {
+			NetmapPeer peer;
+			if (_ParsePeer(&changed->arrayValue[i], peer))
+				_UpsertPeer(peer);
+		}
+	}
+
+	// "PeersChangedPatch": partial updates (NodeID + only the changed fields,
+	// typically Endpoints / DERPRegion / Online / Key) for an existing peer.
+	const JsonValue* patch = root.Find("PeersChangedPatch");
+	if (patch != NULL && patch->IsArray()) {
+		for (size_t i = 0; i < patch->arrayValue.size(); i++) {
+			const JsonValue& pp = patch->arrayValue[i];
+			if (!pp.IsObject())
+				continue;
+			const JsonValue* nid = pp.Find("NodeID");
+			if (nid == NULL)
+				continue;
+			int64 targetId = (int64)nid->AsNumber(0);
+			for (size_t j = 0; j < fPeers.size(); j++) {
+				if (fPeers[j].nodeID != targetId)
+					continue;
+				const JsonValue* eps = pp.Find("Endpoints");
+				if (eps != NULL) {
+					fPeers[j].endpoints.clear();
+					_CollectStrings(eps, fPeers[j].endpoints);
+				}
+				const JsonValue* derp = pp.Find("DERPRegion");
+				if (derp != NULL)
+					fPeers[j].derpRegion = (int)derp->AsNumber(fPeers[j].derpRegion);
+				const JsonValue* online = pp.Find("Online");
+				if (online != NULL)
+					fPeers[j].online = online->AsBool(fPeers[j].online);
+				const JsonValue* key = pp.Find("Key");
+				if (key != NULL && key->IsString())
+					fPeers[j].nodeKey = _StripKeyPrefix(key->stringValue.String());
+				const JsonValue* disco = pp.Find("DiscoKey");
+				if (disco != NULL && disco->IsString())
+					fPeers[j].discoKey =
+						_StripKeyPrefix(disco->stringValue.String());
+				break;
+			}
+		}
+	}
+
+	// "PeersRemoved": array of NodeIDs to drop.
+	const JsonValue* removed = root.Find("PeersRemoved");
+	if (removed != NULL && removed->IsArray()) {
+		for (size_t i = 0; i < removed->arrayValue.size(); i++) {
+			int64 gone = (int64)removed->arrayValue[i].AsNumber(0);
+			for (size_t j = 0; j < fPeers.size(); j++) {
+				if (fPeers[j].nodeID == gone) {
+					fPeers.erase(fPeers.begin() + j);
+					break;
+				}
+			}
 		}
 	}
 
@@ -128,6 +219,7 @@ TSNetmap::Parse(const char* json, size_t len)
 	if (derpMap != NULL && derpMap->IsObject()) {
 		const JsonValue* regions = derpMap->Find("Regions");
 		if (regions != NULL && regions->IsObject()) {
+			fDerpRegions.clear();	// full DERP map when present; replace
 			for (size_t i = 0; i < regions->objectValue.size(); i++) {
 				const JsonValue& rj = regions->objectValue[i].second;
 				if (!rj.IsObject())
@@ -173,6 +265,8 @@ TSNetmap::Parse(const char* json, size_t len)
 	// snapshots use Nameservers ([addr strings]). Accept both.
 	const JsonValue* dns = root.Find("DNSConfig");
 	if (dns != NULL && dns->IsObject()) {
+		fDns.resolvers.clear();		// full DNS config when present; replace
+		fDns.domains.clear();
 		const JsonValue* resolvers = dns->Find("Resolvers");
 		if (resolvers != NULL && resolvers->IsArray()) {
 			for (size_t i = 0; i < resolvers->arrayValue.size(); i++) {

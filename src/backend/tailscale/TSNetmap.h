@@ -23,6 +23,7 @@
 namespace ts {
 
 struct NetmapPeer {
+	int64					nodeID;		// tailcfg NodeID, for delta apply/removal
 	BString					nodeKey;	// hex, "nodekey:" prefix stripped
 	BString					discoKey;	// hex, "discokey:" prefix stripped
 	BString					hostname;
@@ -31,7 +32,8 @@ struct NetmapPeer {
 	std::vector<BString>	allowedIPs;	// CIDR strings
 	std::vector<BString>	endpoints;	// "ip:port" direct-path candidates
 
-							NetmapPeer() : online(false), derpRegion(-1) {}
+							NetmapPeer()
+								: nodeID(0), online(false), derpRegion(-1) {}
 };
 
 
@@ -91,6 +93,12 @@ private:
 	// region number into a region id; -1 if not recognised.
 	static	int				_ParseDerp(const char* derp);
 	static	BString			_StripKeyPrefix(const char* key);
+	// Parse one tailcfg.Node JSON object into a peer; false if unusable (no
+	// key). Shared by the full "Peers" list and the "PeersChanged" delta.
+	static	bool			_ParsePeer(const void* jsonNode, NetmapPeer& out);
+	// Insert or replace a peer in fPeers, matching by nodeID (falling back to
+	// nodeKey), so a "PeersChanged" delta updates rather than duplicates.
+			void			_UpsertPeer(const NetmapPeer& peer);
 
 			std::vector<BString>		fSelfAddresses;
 			std::vector<NetmapPeer>		fPeers;
