@@ -23,6 +23,13 @@ class BStringView;
 class HeaderView;
 
 
+// Automation hooks: posting these to the main window runs the same connect /
+// disconnect paths as the menu items. Used by the app's `hey` scripting suite
+// so the two commands are drivable from a script or the command line.
+static const uint32 kMsgAutomationConnect		= 'auCo';
+static const uint32 kMsgAutomationDisconnect	= 'auDi';
+
+
 // The main Sotoportego window. Like the CLI, it is purely a client of the
 // daemon: it subscribes over BMessage, reflects the broadcast state/stats, and
 // sends connect/disconnect requests. No VPN logic lives here.

@@ -170,9 +170,9 @@ MainWindow::_BuildLayout()
 
 	BMenu* connectionMenu = new BMenu("Connection");
 	connectionMenu->AddItem(new BMenuItem("Connect",
-		new BMessage(kMsgConnectAction)));
+		new BMessage(kMsgConnectAction), 'K'));
 	connectionMenu->AddItem(new BMenuItem("Disconnect",
-		new BMessage(kMsgDisconnectAction)));
+		new BMessage(kMsgDisconnectAction), 'D'));
 	connectionMenu->AddSeparatorItem();
 	connectionMenu->AddItem(new BMenuItem("Forget saved password",
 		new BMessage(kMsgForgetPassword)));
@@ -180,9 +180,9 @@ MainWindow::_BuildLayout()
 
 	BMenu* tailscaleMenu = new BMenu("Tailscale");
 	tailscaleMenu->AddItem(new BMenuItem("Add Tailscale network" B_UTF8_ELLIPSIS,
-		new BMessage(kMsgAddTailscale)));
+		new BMessage(kMsgAddTailscale), 'T'));
 	tailscaleMenu->AddItem(new BMenuItem("Show peers" B_UTF8_ELLIPSIS,
-		new BMessage(kMsgShowPeers)));
+		new BMessage(kMsgShowPeers), 'P'));
 	tailscaleMenu->AddSeparatorItem();
 	tailscaleMenu->AddItem(new BMenuItem("Create a Tailscale account"
 		B_UTF8_ELLIPSIS, new BMessage(kMsgTailscaleSignup)));
@@ -192,7 +192,7 @@ MainWindow::_BuildLayout()
 
 	BMenu* toolsMenu = new BMenu("Tools");
 	toolsMenu->AddItem(new BMenuItem("Browse servers on map" B_UTF8_ELLIPSIS,
-		new BMessage(kMsgBrowseOnMap)));
+		new BMessage(kMsgBrowseOnMap), 'M'));
 	toolsMenu->AddSeparatorItem();
 	toolsMenu->AddItem(new BMenuItem("Install Deskbar icon",
 		new BMessage(kMsgInstallDeskbar)));
@@ -395,9 +395,11 @@ MainWindow::MessageReceived(BMessage* message)
 			break;
 
 		case kMsgConnectAction:
+		case kMsgAutomationConnect:	// hey: `Sotoportego Connect`
 			_BeginConnectFlow();
 			break;
 		case kMsgDisconnectAction:
+		case kMsgAutomationDisconnect:	// hey: `Sotoportego Disconnect`
 			_SendDisconnect();
 			break;
 
