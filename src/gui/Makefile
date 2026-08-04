@@ -23,6 +23,7 @@ SRCS = \
 	MainWindow.cpp \
 	HeaderView.cpp \
 	CredentialsWindow.cpp \
+	TailscaleWindow.cpp \
 	MetricPill.cpp \
 	VaporettoWindow.cpp \
 	DeskbarIcon.cpp \

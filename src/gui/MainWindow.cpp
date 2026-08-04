@@ -36,6 +36,7 @@
 #include "CredentialsWindow.h"
 #include "DeskbarIcon.h"
 #include "HeaderView.h"
+#include "TailscaleWindow.h"
 #include "OpenVPNConfigParser.h"
 #include "WireGuardConfigParser.h"
 #include "VPNMapWindow.h"
@@ -61,6 +62,8 @@ static const uint32 kMsgInstallDeskbar		= 'gDIn';
 static const uint32 kMsgRemoveDeskbar		= 'gDRm';
 static const uint32 kMsgBrowseOnMap			= 'gMap';
 static const uint32 kMsgUptimeTick			= 'gUpT';
+static const uint32 kMsgAddTailscale		= 'gTsA';	// open the Tailscale dialog
+static const uint32 kMsgTailscaleOK			= 'gTsO';	// dialog -> create profile
 
 static const char* const kBackendName	= "OpenVPN";
 
@@ -138,6 +141,11 @@ MainWindow::_BuildLayout()
 	connectionMenu->AddItem(new BMenuItem("Forget saved password",
 		new BMessage(kMsgForgetPassword)));
 	menuBar->AddItem(connectionMenu);
+
+	BMenu* tailscaleMenu = new BMenu("Tailscale");
+	tailscaleMenu->AddItem(new BMenuItem("Add Tailscale network" B_UTF8_ELLIPSIS,
+		new BMessage(kMsgAddTailscale)));
+	menuBar->AddItem(tailscaleMenu);
 
 	BMenu* toolsMenu = new BMenu("Tools");
 	toolsMenu->AddItem(new BMenuItem("Browse servers on map" B_UTF8_ELLIPSIS,
@@ -394,6 +402,26 @@ MainWindow::MessageReceived(BMessage* message)
 			// now (will become a daemon-broadcast list later).
 			VPNMapWindow* window = new VPNMapWindow();
 			window->Show();
+			break;
+		}
+		case kMsgAddTailscale:
+		{
+			// Collect a name + control server, then create a Tailscale profile.
+			TailscaleWindow* dialog = new TailscaleWindow(this,
+				BMessenger(this), kMsgTailscaleOK);
+			dialog->Show();
+			break;
+		}
+		case kMsgTailscaleOK:
+		{
+			const char* name = NULL;
+			const char* url = NULL;
+			if (message->FindString(kFieldTsName, &name) != B_OK
+					|| name == NULL || *name == '\0')
+				break;
+			if (message->FindString(kFieldTsUrl, &url) != B_OK || url == NULL)
+				url = "controlplane.tailscale.com";
+			_CreateTailscaleProfile(name, url);
 			break;
 		}
 		case kMsgProfileSelected:
@@ -988,6 +1016,53 @@ MainWindow::_ImportFile(const entry_ref& ref)
 	save.AddMessenger(kFieldClient, BMessenger(this));
 	save.AddMessage(kFieldProfile, &archive);
 	fServer.SendMessage(&save);
+}
+
+
+void
+MainWindow::_CreateTailscaleProfile(const char* name, const char* controlURL)
+{
+	if (!fServer.IsValid() || name == NULL || *name == '\0')
+		return;
+
+	// Confirm before replacing an existing profile of the same name.
+	for (size_t i = 0; i < fProfiles.size(); i++) {
+		if (fProfiles[i].fName == name) {
+			BString question;
+			question << "A profile named '" << name << "' already exists.\n\n"
+				   "Replace it?";
+			BAlert* alert = new BAlert("overwriteProfile", question.String(),
+				"Cancel", "Replace");
+			alert->SetShortcut(0, B_ESCAPE);
+			if (alert->Go() != 1)
+				return;
+			break;
+		}
+	}
+
+	VPNProfile profile;
+	profile.fBackendType = VPN_BACKEND_TAILSCALE;
+	profile.fName = name;
+	// The control server (public coordination server or a Headscale URL) rides
+	// on fServer; the daemon defaults it to controlplane.tailscale.com if empty.
+	profile.fServer = (controlURL != NULL && *controlURL != '\0')
+		? controlURL : "controlplane.tailscale.com";
+	profile.fPort = 443;
+	profile.fProtocol = "";
+	profile.fConfigPath = "";
+
+	// Optimistically select the new profile once the server echoes the list.
+	fSelectedName = profile.fName;
+
+	BMessage archive;
+	profile.Archive(&archive);
+	BMessage save(kMsgSaveProfile);
+	save.AddMessenger(kFieldClient, BMessenger(this));
+	save.AddMessage(kFieldProfile, &archive);
+	fServer.SendMessage(&save);
+
+	_AppendEvent(BString("Added Tailscale network '").Append(name).Append(
+		"' \xe2\x80\x94 select it and click Connect to sign in.").String());
 }
 
 

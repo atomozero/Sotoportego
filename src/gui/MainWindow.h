@@ -66,6 +66,10 @@ private:
 			void				_RefreshDetails();
 			void				_OpenImportPanel();
 			void				_ImportFile(const entry_ref& ref);
+		// Create and save a Tailscale profile (VPN_BACKEND_TAILSCALE) from the
+		// name + control-server URL the Tailscale dialog collected.
+			void				_CreateTailscaleProfile(const char* name,
+									const char* controlURL);
 			void				_DeleteSelectedProfile();
 			const VPNProfile*	_SelectedProfile() const;
 
