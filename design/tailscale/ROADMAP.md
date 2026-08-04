@@ -105,7 +105,12 @@ Goal: turn a `MapResponse` into live WireGuard peer state.
       format + malformed-response rejection; the handshake crypto is the same
       logic proven in WireGuardBackend against a real peer. Remaining cleanup:
       have WireGuardBackend itself delegate to WGPeer (rekey timer stays there).)*
-- [ ] Assign our `100.x` Tailscale IP to `tun/N`; program peers from the netmap.
+- [x] Assign our `100.x` Tailscale IP to `tun/N`; program peers from the netmap.
+      *(`TailscaleBackend::_BringUpTun` probes a free tun slot (reusing
+      `TunDevice`) and assigns `SelfIPv4()`/10 the first time the netmap yields
+      our address; `_TeardownTun` removes it on disconnect/error/exit. Peers are
+      programmed via `TSPeerSet` from each netmap. Packet forwarding over the tun
+      still needs the reader threads.)*
 - **Done when:** peers appear with correct keys/AllowedIPs and our tun has the
       tailnet IP (still no packet path yet — that's DERP/magicsock).
 

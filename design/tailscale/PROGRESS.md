@@ -15,6 +15,23 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 3: tun bring-up with the tailnet address
+- Did: `TailscaleBackend::_BringUpTun` — the first on-device data-plane action.
+  When the map loop first reports our self address, the backend probes a free
+  `tun/N` slot (reusing `TunDevice::ProbeFreeSlot`) and assigns `SelfIPv4()` with
+  a /10 netmask (255.192.0.0), so all peer `100.64.0.0/10` addresses are on-link
+  through the tun. `_TeardownTun` (`ifconfig delete`) runs on
+  disconnect/error/destructor. Stored the slot in `fTunInterface`/`fTunNode`.
+- Build: **green on-Haiku**; the offline regression suite still passes (34/34).
+  The bring-up fires only after a real netmap (authorized node), so it isn't
+  exercised without login, but it reuses `TunDevice` already proven by the
+  OpenVPN/WireGuard backends.
+- Next: the tun + magicsock reader threads that move packets over this interface
+  (tun read → `FindByAllowedIP` → `WGPeer::Encapsulate` → send via `PeerPath`;
+  socket read → `Classify` → `WGPeer::Decapsulate` → tun write), plus route
+  install for accepted subnets and the `RecoverIfCrashed` rollback. Verified
+  against a live two-node tailnet / Headscale.
+
 ## 2026-08-04 — Test suite: committed offline self-test (34 checks green)
 - Did: Consolidated the per-iteration verification (previously throwaway
   scratchpad programs) into a permanent, committed regression suite:

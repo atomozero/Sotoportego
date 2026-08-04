@@ -69,6 +69,11 @@ private:
 										BMessenger& self);
 			void				_StopWorker();
 
+	// Bring up a tun/N slot and assign our tailnet IPv4 (/10 CGNAT) to it, once
+	// the first netmap gives us a self address; _TeardownTun removes it.
+			void				_BringUpTun(const char* selfIPv4);
+			void				_TeardownTun();
+
 			VPNState			fState;
 			VPNStats			fStats;
 			BString				fLocalIP;	// our 100.x tailnet address
@@ -90,6 +95,10 @@ private:
 
 			// The netmap-derived data-plane state, updated by the map loop.
 			ts::SessionState	fSession;
+
+			// Haiku tun slot once brought up: "tun/N" and "/dev/tun/N".
+			BString				fTunInterface;
+			BString				fTunNode;
 };
 
 

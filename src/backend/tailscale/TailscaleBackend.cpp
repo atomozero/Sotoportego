@@ -14,6 +14,7 @@
 #include "TSControlSession.h"
 #include "TSMap.h"
 #include "TSRegister.h"
+#include "TunDevice.h"
 
 
 // Private messages the control worker posts back to the looper.
@@ -45,6 +46,7 @@ TailscaleBackend::TailscaleBackend()
 TailscaleBackend::~TailscaleBackend()
 {
 	_StopWorker();
+	_TeardownTun();
 }
 
 
@@ -174,8 +176,13 @@ TailscaleBackend::MessageReceived(BMessage* message)
 			int32 peers = 0;
 			const char* selfip = NULL;
 			message->FindInt32("peers", &peers);
-			if (message->FindString("selfip", &selfip) == B_OK && selfip != NULL)
+			if (message->FindString("selfip", &selfip) == B_OK && selfip != NULL) {
 				fLocalIP = selfip;
+				// Bring up the tun interface with our tailnet address the first
+				// time we learn it.
+				if (fTunInterface.Length() == 0 && *selfip != '\0')
+					_BringUpTun(selfip);
+			}
 			BString detail;
 			detail.SetToFormat("netmap: %d peer%s%s%s (data plane pending)",
 				(int)peers, peers == 1 ? "" : "s",
@@ -189,6 +196,7 @@ TailscaleBackend::MessageReceived(BMessage* message)
 		case kMsgTsFailed:
 		{
 			fWorker = -1;
+			_TeardownTun();
 			const char* detail = NULL;
 			if (message->FindString("detail", &detail) != B_OK)
 				detail = NULL;
@@ -217,6 +225,43 @@ TailscaleBackend::_StartWorker()
 		return;
 	}
 	resume_thread(fWorker);
+}
+
+
+void
+TailscaleBackend::_BringUpTun(const char* selfIPv4)
+{
+	if (fTunInterface.Length() > 0 || selfIPv4 == NULL || *selfIPv4 == '\0')
+		return;
+	BString iface, node;
+	if (!TunDevice::ProbeFreeSlot(iface, node)) {
+		fprintf(stderr, "[tailscale] could not get a tun slot\n");
+		return;
+	}
+	// Tailnet IPv4 lives in 100.64.0.0/10, so a /10 netmask (255.192.0.0)
+	// makes all peer 100.x addresses on-link through the tun.
+	const char* argv[] = { "ifconfig", iface.String(), "inet", selfIPv4,
+		"netmask", "255.192.0.0", NULL };
+	if (!TunDevice::RunIfconfig(argv)) {
+		fprintf(stderr, "[tailscale] failed to assign %s to %s\n", selfIPv4,
+			iface.String());
+		return;
+	}
+	fTunInterface = iface;
+	fTunNode = node;
+	printf("[tailscale] tun %s up with %s/10\n", iface.String(), selfIPv4);
+}
+
+
+void
+TailscaleBackend::_TeardownTun()
+{
+	if (fTunInterface.Length() == 0)
+		return;
+	const char* argv[] = { "ifconfig", fTunInterface.String(), "delete", NULL };
+	TunDevice::RunIfconfig(argv, true);
+	fTunInterface = "";
+	fTunNode = "";
 }
 
 
