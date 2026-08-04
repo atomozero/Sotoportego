@@ -4,6 +4,10 @@
  */
 #include "TSPeerSet.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "TSIdentity.h"		// FromHex
 
 
@@ -32,6 +36,69 @@ TSPeerSet::Find(const char* nodeKeyHex)
 		return NULL;
 	int idx = _IndexOf(BString(nodeKeyHex));
 	return idx >= 0 ? &fPeers[idx] : NULL;
+}
+
+
+// Parse "a.b.c.d" to a host-order uint32; false on malformed input.
+static bool
+parse_ipv4(const char* s, uint32& out)
+{
+	unsigned a, b, c, d;
+	if (s == NULL || sscanf(s, "%u.%u.%u.%u", &a, &b, &c, &d) != 4)
+		return false;
+	if (a > 255 || b > 255 || c > 255 || d > 255)
+		return false;
+	out = (a << 24) | (b << 16) | (c << 8) | d;
+	return true;
+}
+
+
+// Parse "a.b.c.d/n" (n optional, default /32). Returns prefix length, or -1.
+static int
+parse_cidr(const BString& cidr, uint32& network)
+{
+	BString ipPart(cidr);
+	int prefix = 32;
+	int slash = ipPart.FindFirst('/');
+	if (slash >= 0) {
+		prefix = atoi(ipPart.String() + slash + 1);
+		ipPart.Truncate(slash);
+	}
+	if (ipPart.FindFirst(':') >= 0)		// IPv6: not handled here
+		return -1;
+	if (prefix < 0 || prefix > 32)
+		return -1;
+	if (!parse_ipv4(ipPart.String(), network))
+		return -1;
+	return prefix;
+}
+
+
+ManagedPeer*
+TSPeerSet::FindByAllowedIP(const char* ipv4)
+{
+	uint32 dst;
+	if (!parse_ipv4(ipv4, dst))
+		return NULL;
+
+	ManagedPeer* best = NULL;
+	int bestPrefix = -1;
+	for (size_t i = 0; i < fPeers.size(); i++) {
+		const std::vector<BString>& allowed = fPeers[i].allowedIPs;
+		for (size_t j = 0; j < allowed.size(); j++) {
+			uint32 net;
+			int prefix = parse_cidr(allowed[j], net);
+			if (prefix < 0)
+				continue;
+			// mask = top `prefix` bits (prefix 0 -> match everything).
+			uint32 mask = prefix == 0 ? 0 : (0xffffffffu << (32 - prefix));
+			if (((dst ^ net) & mask) == 0 && prefix > bestPrefix) {
+				bestPrefix = prefix;
+				best = &fPeers[i];
+			}
+		}
+	}
+	return best;
 }
 
 

@@ -54,6 +54,12 @@ public:
 			// valid only until the next Update().
 			ManagedPeer*	Find(const char* nodeKeyHex);
 
+			// Route an outbound packet: find the peer whose AllowedIPs contain
+			// the IPv4 destination `ipv4` ("a.b.c.d"), by longest-prefix match
+			// (the most specific route wins). NULL if no peer claims it. This is
+			// the tun→peer lookup the data-plane reader makes.
+			ManagedPeer*	FindByAllowedIP(const char* ipv4);
+
 private:
 			int				_IndexOf(const BString& hex) const;
 

@@ -15,6 +15,21 @@ Format per entry:
 
 ---
 
+## 2026-08-04 — Phase 6: AllowedIPs routing (tun → peer lookup)
+- Did: Added `TSPeerSet::FindByAllowedIP` — the outbound routing decision the tun
+  reader will make: given a packet's IPv4 destination, find the peer whose
+  AllowedIPs contain it by **longest-prefix match** (most specific route wins),
+  or none (packet takes the system default route). Added IPv4/CIDR parse helpers
+  (host-order uint32, `a.b.c.d/n`, IPv6 entries skipped).
+- Build: **green on-Haiku.** Unit test: with peer A owning `100.64.0.6/32` and
+  peer B advertising `100.64.0.0/24` + `10.0.0.0/8` — `100.64.0.6 → A` (/32 beats
+  /24), `100.64.0.9 → B` (subnet), `10.1.2.3 → B` (advertised subnet), and
+  `8.8.8.8 → none` (unrouted). This is the last pure-logic data-plane piece; what
+  remains is the threaded I/O that calls it (tun read → FindByAllowedIP →
+  `WGPeer::Encapsulate` → send via `PeerPath`), which needs a live tailnet.
+- Next: the magicsock/tun reader threads against a Headscale dev target
+  (see STATUS.md runbook).
+
 ## 2026-08-04 — Milestone: STATUS.md capstone + full-daemon build check
 - Did: Confirmed the whole daemon still links on Haiku with all 24 Tailscale
   modules compiled in (`sotoportego_server`, ~400 KB). Added
