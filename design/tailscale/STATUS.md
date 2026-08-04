@@ -69,6 +69,30 @@ ts2021 Noise handshake → encrypted record stream → HTTP/2 + HPACK →
 accepted our handshake. The whole control plane is interoperable with production
 Tailscale.
 
+## Prior art: the Go port on Haiku (rainygirl/haiku-i386-tailscale-patch)
+
+The one existing attempt to run Tailscale on Haiku patches the **official Go**
+`tailscaled` for i386. Two takeaways confirm this project's direction:
+
+1. **The Go route is a runtime nightmare on Haiku** — the patch needs a custom
+   `poll(2)` netpoller, async-preemption fixes, an `osyield()` 64-bit bug fix,
+   `mmap` fixes, cross-compile-only builds (`x/sys/unix` has no Haiku), and it
+   pins `GOMAXPROCS=1` + `GODEBUG=asyncpreemptoff=1`. Our from-scratch **C++ /
+   OpenSSL** client sidesteps that entire class of problems — none of those
+   runtime issues exist for us.
+2. **It runs in userspace-networking mode with NO TUN device** — it avoids
+   Haiku's tunnel driver entirely and exposes connectivity via `tailscale nc`
+   (e.g. as an SSH ProxyCommand) instead of a real `tun/N`. That is a strong
+   signal that Haiku's `tun` read/write path is the risky unknown (the same
+   caveat the WireGuard backend already carries).
+
+**Action for us:** verify `tun/N` read/write early on real hardware; and add a
+**userspace-networking fallback** — a local SOCKS5 / port-forward front-end over
+`WGPeer` transport that reaches peers *without* the tun (the Go port's approach),
+so the client is useful even if the tunnel driver can't carry raw IP. Our
+transport (`WGPeer` encap/decap) already works independently of the tun, so the
+fallback is mostly a socket front-end.
+
 ## What remains — the packet data plane (needs a live tailnet)
 
 The only unfinished area is the on-device packet path, which the design flags as
