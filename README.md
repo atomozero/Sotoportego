@@ -373,6 +373,19 @@ scripts/       verify-tunnel.sh — shell check that the tunnel is
 
 ## Roadmap
 
+* **Tailscale backend** — a from-scratch, in-process Tailscale client (Haiku has
+  no `tailscaled`), built as a fourth backend behind the same seam. The full
+  `ts2021` control plane is implemented and verified live against the production
+  coordination server: the Noise IK handshake, an OpenSSL TLS transport, the
+  HTTP/2 + HPACK (incl. Huffman) stack, and node registration returning a real
+  login `AuthURL` (auto-opened by the GUI). The network map, NAT-traversal
+  primitives (NaCl box, STUN, disco), the DERP relay client and MagicDNS are all
+  implemented and unit/live-verified, and the session brings up a `tun/N` with
+  the tailnet address + discovers our public endpoint via STUN. What's left is
+  the on-device packet forwarding threads (tun ↔ WireGuard peers ↔ magicsock/
+  DERP), which need a live two-node tailnet / Headscale to finish and validate —
+  see `design/tailscale/` (`STATUS.md` has the module map + runbook). An offline
+  regression suite lives in `src/backend/tailscale/tests/` (`make test`).
 * IPv6 routing — **blocked upstream in Haiku**, not just unimplemented here.
   Haiku's kernel `tunnel` driver rejects `AF_INET6`: an inet6 address can't be
   assigned to a `tun/N` interface (`ifconfig … inet6 …` → *Invalid Argument*),
