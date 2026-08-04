@@ -4,7 +4,10 @@
  */
 #include "HeaderView.h"
 
+#include <math.h>
+
 #include <Bitmap.h>
+#include <Button.h>
 #include <Font.h>
 #include <IconUtils.h>
 
@@ -37,6 +40,12 @@ static const float kTextX				= 68.0f;
 static const float kTitleBaselineY		= 27.0f;
 static const float kSubtitleBaselineY	= 47.0f;
 
+// Right margin kept clear for the hosted Connect/Disconnect button, plus a
+// floor on its width so it doesn't clip or jump when the label toggles
+// between the (narrower) "Connect" and the (wider) "Disconnect".
+static const float kButtonMargin		= 14.0f;
+static const float kButtonMinWidth		= 104.0f;
+
 
 static rgb_color
 _AccentFor(VPNState state)
@@ -62,6 +71,7 @@ HeaderView::HeaderView(const char* name)
 	BView(name, B_WILL_DRAW | B_SUPPORTS_LAYOUT | B_FULL_UPDATE_ON_RESIZE),
 	fState(VPN_STATE_DISCONNECTED),
 	fSubtitle("Disconnected"),
+	fActionButton(NULL),
 	fEasterTarget(),
 	fEasterWhat(0),
 	fLastTileClick(0),
@@ -106,6 +116,48 @@ HeaderView::SetSubtitle(const char* text)
 		return;
 	fSubtitle = next;
 	Invalidate();
+}
+
+
+void
+HeaderView::SetActionButton(BButton* button)
+{
+	if (button == NULL || button == fActionButton)
+		return;
+	fActionButton = button;
+	AddChild(button);
+	_LayoutActionButton();
+}
+
+
+void
+HeaderView::_LayoutActionButton()
+{
+	if (fActionButton == NULL)
+		return;
+
+	// Right-aligned, vertically centred in the banner. The label toggles
+	// between "Connect" and "Disconnect", so size to a width floor so the
+	// button doesn't jump as the state changes.
+	BSize preferred = fActionButton->PreferredSize();
+	BRect bounds = Bounds();
+	float width = preferred.width;
+	if (width < kButtonMinWidth)
+		width = kButtonMinWidth;
+	float height = preferred.height;
+	float left = bounds.right - kButtonMargin - width;
+	float top = floorf((bounds.Height() - height) / 2.0f);
+
+	fActionButton->MoveTo(left, top);
+	fActionButton->ResizeTo(width, height);
+}
+
+
+void
+HeaderView::FrameResized(float width, float height)
+{
+	BView::FrameResized(width, height);
+	_LayoutActionButton();
 }
 
 

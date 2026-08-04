@@ -14,6 +14,7 @@
 #include "VPNState.h"
 
 class BBitmap;
+class BButton;
 
 
 // The dark banner at the top of the main window. Mirrors the look used by
@@ -32,7 +33,14 @@ public:
 			void				SetState(VPNState state);
 			void				SetSubtitle(const char* text);
 
+			// Host the primary Connect/Disconnect button on the right of the
+			// banner. The button is reparented to (and thereafter owned by)
+			// the header's view tree; the header keeps it right-aligned and
+			// vertically centred as the window resizes.
+			void				SetActionButton(BButton* button);
+
 	virtual	void				Draw(BRect updateRect);
+	virtual	void				FrameResized(float width, float height);
 	virtual	void				MouseDown(BPoint where);
 	virtual	BSize				MinSize();
 	virtual	BSize				MaxSize();
@@ -53,9 +61,11 @@ public:
 private:
 			void				_DrawLogoTile(BRect rect);
 			void				_DrawStatusDot(BRect iconRect);
+			void				_LayoutActionButton();
 
 			VPNState			fState;
 			BString				fSubtitle;
+			BButton*			fActionButton;
 			BMessenger			fEasterTarget;
 			uint32				fEasterWhat;
 			bigtime_t			fLastTileClick;

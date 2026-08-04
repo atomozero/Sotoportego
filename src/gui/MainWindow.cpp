@@ -160,6 +160,13 @@ MainWindow::_BuildLayout()
 	fHeader = new HeaderView("header");
 	fHeader->SetEasterEggTarget(BMessenger(this), kMsgVaporetto);
 
+	// The primary action lives in the header banner, right-aligned.
+	fActionButton = new BButton("actionButton", "Connect",
+		new BMessage(kMsgPrimaryAction));
+	fActionButton->MakeDefault(true);
+	fActionButton->SetEnabled(false);
+	fHeader->SetActionButton(fActionButton);
+
 	BTabView* tabs = new BTabView("tabs", B_WIDTH_FROM_LABEL);
 	tabs->AddTab(_BuildConnectionTab());
 	tabs->AddTab(_BuildStatisticsTab());
@@ -253,20 +260,13 @@ MainWindow::_BuildConnectionTab()
 		.Add(new BStringView("externalIPCaption", "External IP:"), 0, 4)
 		.Add(fExternalIPValue, 1, 4);
 
-	fActionButton = new BButton("actionButton", "Connect",
-		new BMessage(kMsgPrimaryAction));
-	fActionButton->MakeDefault(true);
-	fActionButton->SetEnabled(false);
-
+	// The primary Connect/Disconnect button lives in the header banner
+	// (see _BuildLayout), not at the bottom of this tab.
 	BLayoutBuilder::Group<>(tab, B_VERTICAL, B_USE_DEFAULT_SPACING)
 		.SetInsets(B_USE_DEFAULT_SPACING)
 		.AddGroup(B_HORIZONTAL, B_USE_DEFAULT_SPACING)
 			.Add(profilesBox, 0.40f)
 			.Add(detailsBox, 0.60f)
-		.End()
-		.AddGroup(B_HORIZONTAL, 0)
-			.AddGlue()
-			.Add(fActionButton)
 		.End();
 
 	return tab;
