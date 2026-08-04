@@ -320,14 +320,16 @@ le32(const uint8* p)
 static bool
 peer_sockaddr(ts::ManagedPeer* peer, struct sockaddr_in& out)
 {
-	BString ep;
-	if (peer->path.Mode() == ts::PATH_DIRECT
-			&& peer->path.DirectEndpoint().Length() > 0)
-		ep = peer->path.DirectEndpoint();
-	else if (!peer->endpoints.empty())
-		ep = peer->endpoints[0];
-	if (ep.Length() == 0)
+	// Only hand back a direct destination once disco has CONFIRMED it works;
+	// until then the caller relays via DERP. The peer's advertised endpoints
+	// are unverified and frequently unreachable -- e.g. a public address that
+	// would need NAT hairpinning when both nodes sit behind the same router --
+	// so sending real WireGuard traffic straight to endpoints[0] just black-
+	// holed the handshake. Disco ping/pong is what promotes the path.
+	if (peer->path.Mode() != ts::PATH_DIRECT
+			|| peer->path.DirectEndpoint().Length() == 0)
 		return false;
+	BString ep = peer->path.DirectEndpoint();
 
 	int colon = ep.FindLast(':');
 	if (colon < 0)
@@ -367,9 +369,17 @@ void
 TailscaleBackend::_SendToPeer(ts::ManagedPeer* peer, const uint8* packet,
 	size_t len)
 {
+	// Probe for a direct path whenever we're still relaying -- BEFORE the
+	// handshake check. Otherwise the disco pings were gated behind a completed
+	// WireGuard session that itself never completes for a peer we can only
+	// reach direct (same-NAT hole punch), so the path stayed stuck on DERP.
+	if (peer->path.Mode() != ts::PATH_DIRECT)
+		_SendDiscoPing(peer);
+
 	if (!peer->wg.HasKeys()) {
 		// Lazily start a WireGuard handshake, throttled so a burst of packets
-		// doesn't flood initiations. The response arrives on a reader thread.
+		// doesn't flood initiations. The initiation goes via DERP (or a
+		// confirmed direct path); the response arrives on a reader thread.
 		bigtime_t now = system_time();
 		if (now - peer->lastHandshake > 5000000) {
 			uint8 init[148];
@@ -386,11 +396,6 @@ TailscaleBackend::_SendToPeer(ts::ManagedPeer* peer, const uint8* packet,
 	size_t n = peer->wg.Encapsulate(packet, len, out);
 	if (n > 0)
 		_SendPeerBytes(peer, out, n);
-
-	// While relaying via DERP, probe the peer's endpoints so a direct path can
-	// take over.
-	if (peer->path.Mode() != ts::PATH_DIRECT)
-		_SendDiscoPing(peer);
 }
 
 
@@ -494,8 +499,12 @@ TailscaleBackend::_HandleWireGuardPacket(const uint8* buf, size_t len)
 		uint32 idx = le32(buf + 8);
 		fSessionLock.Lock();
 		ts::ManagedPeer* p = fSession.Peers().FindBySenderIndex(idx);
-		if (p != NULL)
+		if (p != NULL) {
 			p->wg.ConsumeResponse(buf, len);
+			if (p->wg.HasKeys())
+				printf("[tailscale] WireGuard session up with %s\n",
+					p->hostname.String());
+		}
 		fSessionLock.Unlock();
 	} else if (buf[0] == 4 && len >= 32) {
 		// Transport data: receiver index (bytes 4..7) is our sender idx.
