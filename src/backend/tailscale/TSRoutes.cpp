@@ -88,4 +88,49 @@ DiffRoutes(const std::vector<SubnetRoute>& desired,
 	}
 }
 
+
+static bool
+contains_ip(const std::vector<BString>& v, const BString& ip)
+{
+	for (size_t i = 0; i < v.size(); i++) {
+		if (v[i] == ip)
+			return true;
+	}
+	return false;
+}
+
+
+void
+ComputeExitCarveouts(const std::vector<BString>& underlayIPs,
+	std::vector<BString>& out)
+{
+	out.clear();
+	for (size_t i = 0; i < underlayIPs.size(); i++) {
+		const BString& ip = underlayIPs[i];
+		uint32 parsed = 0;
+		if (ip.Length() == 0 || !parse_ipv4(ip.String(), parsed))
+			continue;	// empty or non-IPv4 (e.g. an IPv6 or DERP hostname)
+		if (!contains_ip(out, ip))
+			out.push_back(ip);
+	}
+}
+
+
+void
+DiffCarveouts(const std::vector<BString>& desired,
+	const std::vector<BString>& pinned,
+	std::vector<BString>& toAdd, std::vector<BString>& toRemove)
+{
+	toAdd.clear();
+	toRemove.clear();
+	for (size_t i = 0; i < desired.size(); i++) {
+		if (!contains_ip(pinned, desired[i]))
+			toAdd.push_back(desired[i]);
+	}
+	for (size_t i = 0; i < pinned.size(); i++) {
+		if (!contains_ip(desired, pinned[i]))
+			toRemove.push_back(pinned[i]);
+	}
+}
+
 }	// namespace ts

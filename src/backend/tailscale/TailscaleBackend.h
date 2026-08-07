@@ -54,6 +54,7 @@ public:
 	virtual	BString				LocalIP() const;
 	virtual	BString				RemoteIP() const;
 	virtual	void				FillPeers(BMessage& out);
+	virtual	status_t			SetExitNode(const BString& id);
 
 	virtual	void				MessageReceived(BMessage* message);
 
@@ -95,6 +96,17 @@ private:
 	// node default route is not auto-installed. Torn down on stop.
 			void				_SyncRoutes();
 			void				_TeardownRoutes();
+	// Exit node: route all traffic through a chosen peer that advertises
+	// 0.0.0.0/0. Reconciled from the tun reader's tick against the requested
+	// selection; the underlay carve-outs (control, DERP, the exit node's own
+	// endpoints) are kept pinned to the carrier and re-pinned as the path shifts
+	// from relay to direct, so our own packets never loop into the tunnel.
+			void				_SyncExitNode();
+			void				_EnableExitNode(const char* nodeKeyHex);
+			void				_DisableExitNode();
+			void				_ReconcileExitCarveouts();
+			void				_ExitUnderlayIPs(const char* nodeKeyHex,
+									std::vector<BString>& out);
 	// Open the magicsock UDP socket and learn our public endpoint via a DERP
 	// STUN server from the netmap. Runs on the worker thread (STUN blocks).
 			void				_BringUpMagicSock(BMessenger& self);
@@ -190,6 +202,16 @@ private:
 			// System subnet routes we've installed onto the tun (peer subnet
 			// routers), reconciled against the netmap; removed on teardown.
 			std::vector<ts::SubnetRoute>	fInstalledRoutes;
+
+			// Exit node selection + applied full-tunnel state. fDesiredExitNode
+			// (guarded by fSessionLock) is what the user asked for; the rest is
+			// touched only by the tun reader thread that applies it.
+			BString				fDesiredExitNode;	// node key hex, "" = none
+			BString				fActiveExitNode;	// currently applied
+			std::vector<BString>	fExitCarveouts;	// /32s pinned to the carrier
+			BString				fExitOrigGateway;	// carrier default we replaced
+			BString				fExitOrigGatewayIface;
+			bool				fExitDefaultReplaced;
 
 			// The magicsock UDP socket (worker-owned) and our discovered public
 			// endpoint.

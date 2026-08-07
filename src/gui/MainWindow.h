@@ -155,6 +155,7 @@ private:
 		// open) plus the latest peer snapshot pushed to it on every status
 		// update.
 			BMessenger				fPeersWindow;
+			BMessenger				fTopologyWindow;
 			BMessage				fLastPeers;
 
 		// The profile the daemon reports as actually connected (broadcast in

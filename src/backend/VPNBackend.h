@@ -62,6 +62,12 @@ public:
 	virtual	void				SetCredentials(const BString& /*user*/,
 									const BString& /*pass*/) {}
 
+	// Route all traffic through a peer acting as an exit node, identified by an
+	// opaque backend-specific id (empty string clears it). Only meshy backends
+	// (Tailscale) support this; the default reports it isn't supported.
+	virtual	status_t			SetExitNode(const BString& /*id*/)
+									{ return B_NOT_SUPPORTED; }
+
 	// Called once at daemon startup. Backends that touch routing or other
 	// system state during a session can override this to roll back any
 	// mess left over by a previous crashed run. Default is a no-op.

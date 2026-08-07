@@ -38,6 +38,7 @@
 #include "DeskbarIcon.h"
 #include "HeaderView.h"
 #include "PeersWindow.h"
+#include "TopologyWindow.h"
 #include "TailscaleWindow.h"
 #include "OpenVPNConfigParser.h"
 #include "WireGuardConfigParser.h"
@@ -69,6 +70,7 @@ static const uint32 kMsgTailscaleOK			= 'gTsO';	// dialog -> create profile
 static const uint32 kMsgTailscaleSignup		= 'gTsS';	// open the account signup page
 static const uint32 kMsgTailscaleAdmin		= 'gTsD';	// open the web admin console
 static const uint32 kMsgShowPeers			= 'gTsP';	// open the peers window
+static const uint32 kMsgShowTopology		= 'gTsM';	// open the tailnet map
 
 // Where a new user goes to create a Tailscale account (opens in the browser).
 // Tailscale has no email/password signup: an account is created by signing in
@@ -183,6 +185,8 @@ MainWindow::_BuildLayout()
 		new BMessage(kMsgAddTailscale), 'T'));
 	tailscaleMenu->AddItem(new BMenuItem("Show peers" B_UTF8_ELLIPSIS,
 		new BMessage(kMsgShowPeers), 'P'));
+	tailscaleMenu->AddItem(new BMenuItem("Tailnet map" B_UTF8_ELLIPSIS,
+		new BMessage(kMsgShowTopology), 'G'));
 	tailscaleMenu->AddSeparatorItem();
 	tailscaleMenu->AddItem(new BMenuItem("Create a Tailscale account"
 		B_UTF8_ELLIPSIS, new BMessage(kMsgTailscaleSignup)));
@@ -506,6 +510,34 @@ MainWindow::MessageReceived(BMessage* message)
 			}
 			fLastPeers.what = kMsgPeersData;
 			fPeersWindow.SendMessage(&fLastPeers);
+			break;
+		}
+		case kMsgShowTopology:
+		{
+			// Open (or re-use) the tailnet map window and seed it with the
+			// latest peer snapshot, exactly like the peers window.
+			if (!fTopologyWindow.IsValid()) {
+				TopologyWindow* w = new TopologyWindow(this);
+				fTopologyWindow = BMessenger(w);
+				w->Show();
+			}
+			fLastPeers.what = kMsgPeersData;
+			fTopologyWindow.SendMessage(&fLastPeers);
+			break;
+		}
+		case kMsgExitNodeRequest:
+		{
+			// The peers window asked to (de)select an exit node; forward it to
+			// the daemon, which routes all traffic through that peer.
+			if (!fServer.IsValid())
+				break;
+			const char* key = NULL;
+			if (message->FindString(kFieldExitNodeKey, &key) != B_OK)
+				key = "";
+			BMessage set(kMsgSetExitNode);
+			set.AddString(kFieldExitNodeKey, key);
+			set.AddMessenger(kFieldClient, BMessenger(this));
+			fServer.SendMessage(&set);
 			break;
 		}
 		case kMsgProfileSelected:
@@ -878,12 +910,18 @@ MainWindow::_UpdatePeers(const BMessage* status)
 	// Tailscale sessions) and push it to the peers window if it's open.
 	fLastPeers.MakeEmpty();
 	fLastPeers.what = kMsgPeersData;
+	// Carry the self tailnet IP so the map can label its centre node.
+	const char* selfIP = NULL;
+	if (status->FindString(kFieldLocalIP, &selfIP) == B_OK && selfIP != NULL)
+		fLastPeers.AddString(kFieldLocalIP, selfIP);
 	BMessage peer;
 	for (int32 i = 0; status->FindMessage(kFieldPeer, i, &peer) == B_OK; i++)
 		fLastPeers.AddMessage(kFieldPeer, &peer);
 
 	if (fPeersWindow.IsValid())
 		fPeersWindow.SendMessage(&fLastPeers);
+	if (fTopologyWindow.IsValid())
+		fTopologyWindow.SendMessage(&fLastPeers);
 }
 
 

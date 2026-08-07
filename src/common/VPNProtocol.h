@@ -79,7 +79,11 @@ enum {
 	// C -> S : connect to a VPNGate server picked from the map. The .ovpn
 	// body is shipped in-message (base64 under kFieldVPNGateConfigBase64)
 	// so the daemon doesn't have to keep the whole catalogue resident.
-	kMsgConnectVPNGate	= 'sCVG'
+	kMsgConnectVPNGate	= 'sCVG',
+
+	// C -> S : route all traffic through a Tailscale exit node, identified by
+	// its node key hex under kFieldExitNodeKey (empty string clears it).
+	kMsgSetExitNode		= 'sExN'
 };
 
 
@@ -165,6 +169,12 @@ static const char* const kFieldPeerName		= "soto:peer:name";		// hostname
 static const char* const kFieldPeerIP		= "soto:peer:ip";		// tailnet IPv4
 static const char* const kFieldPeerOnline	= "soto:peer:online";	// bool
 static const char* const kFieldPeerPath		= "soto:peer:path";		// "direct"/"relay"
+static const char* const kFieldPeerNodeKey	= "soto:peer:nodekey";	// node key hex
+static const char* const kFieldPeerExitCap	= "soto:peer:exitcap";	// bool: exit node
+static const char* const kFieldPeerExitOn	= "soto:peer:exiton";	// bool: active exit
+
+// C -> S command payload: the node key hex of the exit node to use ("" clears).
+static const char* const kFieldExitNodeKey	= "soto:exitNodeKey";
 // Optional Tailscale pre-auth key: when set, the node registers non-
 // interactively instead of opening a browser for SSO login.
 static const char* const kFieldProfileAuthKey	= "soto:profile:authKey";

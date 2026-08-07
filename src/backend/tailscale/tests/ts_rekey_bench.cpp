@@ -35,6 +35,16 @@ has_route(const std::vector<SubnetRoute>& v, const char* net, const char* mask)
 	return false;
 }
 
+static bool
+has_ip(const std::vector<BString>& v, const char* ip)
+{
+	for (size_t i = 0; i < v.size(); i++) {
+		if (v[i] == ip)
+			return true;
+	}
+	return false;
+}
+
 static int sFail = 0;
 static int sPass = 0;
 #define CHECK(cond, msg) do { \
@@ -369,6 +379,47 @@ test_subnet_routes()
 }
 
 
+// --- scenario 8: exit-node underlay carve-out planning -----------------------
+static void
+test_exit_carveouts()
+{
+	std::vector<BString> underlay;
+	underlay.push_back("100.101.102.103");		// control server
+	underlay.push_back("5.6.7.8");				// DERP relay
+	underlay.push_back("5.6.7.8");				// duplicate DERP
+	underlay.push_back("192.168.0.9");			// exit node candidate endpoint
+	underlay.push_back("");						// empty
+	underlay.push_back("derp1.tailscale.com");	// hostname (unresolved) -> drop
+	underlay.push_back("fd7a:115c::1");			// IPv6 -> drop
+
+	std::vector<BString> carve;
+	ComputeExitCarveouts(underlay, carve);
+	CHECK(carve.size() == 3, "carveouts: dedup + drop empty/non-IPv4");
+	CHECK(has_ip(carve, "100.101.102.103") && has_ip(carve, "5.6.7.8")
+		&& has_ip(carve, "192.168.0.9"), "carveouts: the three real IPs kept");
+
+	// The path was relay-only when we enabled the exit node; now it upgrades to
+	// direct and the endpoint must be pinned too.
+	std::vector<BString> pinned;
+	pinned.push_back("100.101.102.103");
+	pinned.push_back("5.6.7.8");
+	std::vector<BString> toAdd, toRemove;
+	DiffCarveouts(carve, pinned, toAdd, toRemove);
+	CHECK(toAdd.size() == 1 && has_ip(toAdd, "192.168.0.9"),
+		"carveouts: diff pins the new direct endpoint");
+	CHECK(toRemove.empty(), "carveouts: diff keeps control/DERP pinned");
+
+	// The exit node roams to a new endpoint: the old pin must be removed.
+	std::vector<BString> newer;
+	newer.push_back("100.101.102.103");
+	newer.push_back("5.6.7.8");
+	newer.push_back("9.9.9.9");
+	DiffCarveouts(newer, carve, toAdd, toRemove);
+	CHECK(has_ip(toAdd, "9.9.9.9") && has_ip(toRemove, "192.168.0.9"),
+		"carveouts: re-pins when the endpoint changes");
+}
+
+
 int
 main()
 {
@@ -380,6 +431,7 @@ main()
 	test_keepalive();
 	test_reconnect_backoff();
 	test_subnet_routes();
+	test_exit_carveouts();
 	printf("---\n%d passed, %d failed\n", sPass, sFail);
 	return sFail == 0 ? 0 : 1;
 }

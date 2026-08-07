@@ -49,6 +49,24 @@ void DiffRoutes(const std::vector<SubnetRoute>& desired,
 		const std::vector<SubnetRoute>& installed,
 		std::vector<SubnetRoute>& toAdd, std::vector<SubnetRoute>& toRemove);
 
+
+// --- exit-node carve-outs ---------------------------------------------------
+// When an exit node captures the default route, our own underlay packets must
+// still leave on the carrier, or they'd loop back into the tunnel they carry:
+// the control server, the DERP relay, and the exit node's direct endpoint(s).
+// ComputeExitCarveouts turns a raw list of candidate underlay host IPs into the
+// deduplicated set of valid IPv4 addresses to pin (/32) on the carrier; empties,
+// duplicates and non-IPv4 entries are dropped. Kept pure for unit testing.
+void ComputeExitCarveouts(const std::vector<BString>& underlayIPs,
+		std::vector<BString>& out);
+
+// Reconcile a desired carve-out IP set against the pinned one (add/remove), the
+// same shape as DiffRoutes but over plain /32 host IPs -- so the backend can
+// re-pin the exit node's endpoint when the path upgrades from relay to direct.
+void DiffCarveouts(const std::vector<BString>& desired,
+		const std::vector<BString>& pinned,
+		std::vector<BString>& toAdd, std::vector<BString>& toRemove);
+
 }	// namespace ts
 
 

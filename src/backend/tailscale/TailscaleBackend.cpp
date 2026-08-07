@@ -40,6 +40,10 @@ static const uint32 kMsgTsEndpoint		= 'tsEp';	// "endpoint" (public ip:port)
 // Default coordination server when a profile doesn't name one.
 static const char* const kDefaultControlHost = "controlplane.tailscale.com";
 
+// Resolve every IPv4 a host maps to (defined later; used by the exit-node
+// carve-out planning, which appears earlier in the file).
+static void resolve_all_ipv4(const char* host, std::vector<BString>& out);
+
 
 TailscaleBackend::TailscaleBackend()
 	:
@@ -53,6 +57,7 @@ TailscaleBackend::TailscaleBackend()
 	fAuthKey(""),
 	fWorker(-1),
 	fStopRequested(false),
+	fExitDefaultReplaced(false),
 	fTunFd(-1),
 	fTunReader(-1),
 	fSockReader(-1),
@@ -116,6 +121,12 @@ TailscaleBackend::Connect(const VPNProfile& profile)
 	// interactively; otherwise fAuthKey stays empty and we fall back to the
 	// browser SSO flow (register -> AuthURL -> followup poll).
 	fAuthKey = profile.fAuthKey;
+
+	// Fresh session: no exit node until the user (re)selects one.
+	fSessionLock.Lock();
+	fDesiredExitNode = "";
+	fActiveExitNode = "";
+	fSessionLock.Unlock();
 
 	fStopRequested = false;
 	_SetState(VPN_STATE_CONNECTING);
@@ -198,6 +209,16 @@ TailscaleBackend::FillPeers(BMessage& out)
 			break;
 		}
 
+		// Exit-node capability: a peer advertising 0.0.0.0/0 can be a full-tunnel
+		// exit. Mark whether it's the one currently active, too.
+		bool exitCap = false;
+		for (size_t j = 0; j < p.allowedIPs.size(); j++) {
+			if (p.allowedIPs[j] == "0.0.0.0/0") {
+				exitCap = true;
+				break;
+			}
+		}
+
 		BMessage pm;
 		pm.AddString(kFieldPeerName,
 			p.hostname.Length() > 0 ? p.hostname.String() : "(unknown)");
@@ -205,6 +226,10 @@ TailscaleBackend::FillPeers(BMessage& out)
 		pm.AddBool(kFieldPeerOnline, p.online);
 		pm.AddString(kFieldPeerPath,
 			p.path.Mode() == ts::PATH_DIRECT ? "direct" : "relay");
+		pm.AddString(kFieldPeerNodeKey, p.nodeKeyHex);
+		pm.AddBool(kFieldPeerExitCap, exitCap);
+		pm.AddBool(kFieldPeerExitOn, fActiveExitNode.Length() > 0
+			&& fActiveExitNode == p.nodeKeyHex);
 		out.AddMessage(kFieldPeer, &pm);
 	}
 	fSessionLock.Unlock();
@@ -420,7 +445,10 @@ TailscaleBackend::_SendToPeer(ts::ManagedPeer* peer, const uint8* packet,
 		}
 	}
 
-	uint8 out[2048];
+	// Encapsulation adds up to 16 (header) + 15 (pad) + 16 (tag) over the payload;
+	// size the buffer for a full tun read (2048) so a large packet can never
+	// overflow it even if the tun MTU is raised.
+	uint8 out[2048 + 64];
 	size_t n = peer->wg.Encapsulate(packet, len, out);
 	if (n > 0)
 		_SendPeerBytes(peer, out, n);
@@ -1021,6 +1049,7 @@ TailscaleBackend::_RunTunReader()
 		if (now - lastMaint >= 1000000) {
 			_MaintainPeers();
 			_DerpKeepaliveTick(now);
+			_SyncExitNode();
 			lastMaint = now;
 		}
 
@@ -1089,6 +1118,13 @@ TailscaleBackend::_BringUpTun(const char* selfIPv4)
 			iface.String());
 		return;
 	}
+	// Cap the tunnel MTU to 1280 (Tailscale's standard). A full 1500-ish tun
+	// packet plus WireGuard's 32-byte overhead exceeds the carrier's 1500 MTU
+	// and gets fragmented or dropped, silently breaking large transfers (small
+	// packets like pings still work, which masks it). 1280 leaves headroom for
+	// the WireGuard + outer IP/UDP headers on any common underlay.
+	const char* mtu[] = { "ifconfig", iface.String(), "mtu", "1280", NULL };
+	TunDevice::RunIfconfig(mtu);	// best-effort
 	fTunInterface = iface;
 	fTunNode = node;
 	fTunSelfIP = selfIPv4;	// on-link next hop for subnet routes
@@ -1170,12 +1206,227 @@ TailscaleBackend::_TeardownRoutes()
 }
 
 
+status_t
+TailscaleBackend::SetExitNode(const BString& id)
+{
+	// Record the request; the tun reader's tick applies it (route changes belong
+	// on the data-plane thread, not the looper that called this).
+	fSessionLock.Lock();
+	fDesiredExitNode = id;
+	fSessionLock.Unlock();
+	printf("[tailscale] exit node requested: %s\n",
+		id.Length() > 0 ? id.String() : "(none)");
+	return B_OK;
+}
+
+
+void
+TailscaleBackend::_ExitUnderlayIPs(const char* nodeKeyHex,
+	std::vector<BString>& out)
+{
+	// Our own underlay endpoints that must keep leaving on the carrier: the
+	// control server and the DERP relay we ride, plus the exit node's reachable
+	// addresses (its candidate endpoints and any confirmed direct path).
+	resolve_all_ipv4(fControlHost.String(), out);
+	if (fDerpHost.Length() > 0)
+		resolve_all_ipv4(fDerpHost.String(), out);
+
+	fSessionLock.Lock();
+	ts::ManagedPeer* p = fSession.Peers().Find(nodeKeyHex);
+	if (p != NULL) {
+		for (size_t i = 0; i < p->endpoints.size(); i++) {
+			int colon = p->endpoints[i].FindLast(':');
+			BString ip = (colon > 0)
+				? BString(p->endpoints[i].String(), colon) : p->endpoints[i];
+			if (ip.Length() > 0)
+				out.push_back(ip);
+		}
+		if (p->path.Mode() == ts::PATH_DIRECT
+				&& p->path.DirectEndpoint().Length() > 0) {
+			const BString& ep = p->path.DirectEndpoint();
+			int colon = ep.FindLast(':');
+			BString ip = (colon > 0) ? BString(ep.String(), colon) : ep;
+			if (ip.Length() > 0)
+				out.push_back(ip);
+		}
+	}
+	fSessionLock.Unlock();
+}
+
+
+void
+TailscaleBackend::_EnableExitNode(const char* nodeKeyHex)
+{
+	// The tun must be up (it's the default route's next hop) and the peer must
+	// actually advertise 0.0.0.0/0 (be exit-capable).
+	if (fTunInterface.Length() == 0 || fTunSelfIP.Length() == 0)
+		return;	// data plane not ready yet; the tick retries
+	bool capable = false;
+	fSessionLock.Lock();
+	ts::ManagedPeer* p = fSession.Peers().Find(nodeKeyHex);
+	if (p != NULL) {
+		for (size_t i = 0; i < p->allowedIPs.size(); i++) {
+			if (p->allowedIPs[i] == "0.0.0.0/0") {
+				capable = true;
+				break;
+			}
+		}
+	}
+	fSessionLock.Unlock();
+	if (!capable) {
+		fprintf(stderr, "[tailscale] exit node %s not found or not advertising "
+			"0.0.0.0/0\n", nodeKeyHex);
+		return;
+	}
+
+	BString gw, iface;
+	if (!TunDevice::DefaultGateway(gw, iface)) {
+		fprintf(stderr, "[tailscale] no default gateway; refusing exit-node full "
+			"tunnel (it would loop)\n");
+		return;
+	}
+
+	// Pin the underlay carve-outs to the carrier BEFORE capturing the default,
+	// so control/DERP/exit-node traffic never routes into the tunnel it carries.
+	std::vector<BString> underlay;
+	_ExitUnderlayIPs(nodeKeyHex, underlay);
+	std::vector<BString> carve;
+	ts::ComputeExitCarveouts(underlay, carve);
+	for (size_t i = 0; i < carve.size(); i++) {
+		const char* const pin[] = {
+			"route", "add", iface.String(), "inet", carve[i].String(),
+			"gw", gw.String(), "netmask", "255.255.255.255", NULL
+		};
+		TunDevice::RunRoute(pin);
+	}
+
+	// Swap the default route onto the tun (all non-carve-out traffic now exits
+	// through the peer, which advertises 0.0.0.0/0 and is picked by the demux).
+	const char* const drop[] = {
+		"route", "delete", iface.String(), "inet", "0.0.0.0",
+		"gw", gw.String(), "netmask", "0.0.0.0", NULL
+	};
+	TunDevice::RunRoute(drop);
+	const char* const add[] = {
+		"route", "add", fTunInterface.String(), "inet", "0.0.0.0",
+		"gw", fTunSelfIP.String(), "netmask", "0.0.0.0", NULL
+	};
+	TunDevice::RunRoute(add);
+
+	fExitOrigGateway = gw;
+	fExitOrigGatewayIface = iface;
+	fExitDefaultReplaced = true;
+	fExitCarveouts = carve;
+	fSessionLock.Lock();		// FillPeers (looper thread) reads fActiveExitNode
+	fActiveExitNode = nodeKeyHex;
+	fSessionLock.Unlock();
+	printf("[tailscale] exit node enabled: %s (%u carve-outs, default via %s)\n",
+		nodeKeyHex, (unsigned)carve.size(), fTunInterface.String());
+}
+
+
+void
+TailscaleBackend::_DisableExitNode()
+{
+	if (fActiveExitNode.Length() == 0)
+		return;
+	if (fExitDefaultReplaced) {
+		const char* const drop[] = {
+			"route", "delete", fTunInterface.String(), "inet", "0.0.0.0",
+			"gw", fTunSelfIP.String(), "netmask", "0.0.0.0", NULL
+		};
+		TunDevice::RunRoute(drop);
+		if (fExitOrigGateway.Length() > 0) {
+			const char* const restore[] = {
+				"route", "add", fExitOrigGatewayIface.String(), "inet",
+				"0.0.0.0", "gw", fExitOrigGateway.String(),
+				"netmask", "0.0.0.0", NULL
+			};
+			TunDevice::RunRoute(restore);
+		}
+	}
+	for (size_t i = 0; i < fExitCarveouts.size(); i++) {
+		const char* const unpin[] = {
+			"route", "delete", fExitOrigGatewayIface.String(), "inet",
+			fExitCarveouts[i].String(), "gw", fExitOrigGateway.String(),
+			"netmask", "255.255.255.255", NULL
+		};
+		TunDevice::RunRoute(unpin);
+	}
+	printf("[tailscale] exit node disabled (%s)\n", fActiveExitNode.String());
+	fExitCarveouts.clear();
+	fExitOrigGateway = "";
+	fExitOrigGatewayIface = "";
+	fExitDefaultReplaced = false;
+	fSessionLock.Lock();		// FillPeers (looper thread) reads fActiveExitNode
+	fActiveExitNode = "";
+	fSessionLock.Unlock();
+}
+
+
+void
+TailscaleBackend::_ReconcileExitCarveouts()
+{
+	// The exit node's path can upgrade from relay to direct (or its endpoints can
+	// change) after we enabled it: re-pin any newly-needed underlay address and
+	// drop stale ones, WITHOUT touching the default route.
+	if (fActiveExitNode.Length() == 0 || fExitOrigGateway.Length() == 0)
+		return;
+	std::vector<BString> underlay;
+	_ExitUnderlayIPs(fActiveExitNode.String(), underlay);
+	std::vector<BString> desired;
+	ts::ComputeExitCarveouts(underlay, desired);
+	std::vector<BString> toAdd, toRemove;
+	ts::DiffCarveouts(desired, fExitCarveouts, toAdd, toRemove);
+	if (toAdd.empty() && toRemove.empty())
+		return;
+	for (size_t i = 0; i < toAdd.size(); i++) {
+		const char* const pin[] = {
+			"route", "add", fExitOrigGatewayIface.String(), "inet",
+			toAdd[i].String(), "gw", fExitOrigGateway.String(),
+			"netmask", "255.255.255.255", NULL
+		};
+		TunDevice::RunRoute(pin);
+		printf("[tailscale] exit carve-out + %s\n", toAdd[i].String());
+	}
+	for (size_t i = 0; i < toRemove.size(); i++) {
+		const char* const unpin[] = {
+			"route", "delete", fExitOrigGatewayIface.String(), "inet",
+			toRemove[i].String(), "gw", fExitOrigGateway.String(),
+			"netmask", "255.255.255.255", NULL
+		};
+		TunDevice::RunRoute(unpin);
+	}
+	fExitCarveouts = desired;
+}
+
+
+void
+TailscaleBackend::_SyncExitNode()
+{
+	fSessionLock.Lock();
+	BString desired = fDesiredExitNode;
+	fSessionLock.Unlock();
+
+	if (desired != fActiveExitNode) {
+		if (fActiveExitNode.Length() > 0)
+			_DisableExitNode();
+		if (desired.Length() > 0)
+			_EnableExitNode(desired.String());
+	} else if (fActiveExitNode.Length() > 0) {
+		_ReconcileExitCarveouts();
+	}
+}
+
+
 void
 TailscaleBackend::_TeardownTun()
 {
 	if (fTunInterface.Length() == 0)
 		return;
-	// Remove our subnet routes before the interface (their next hop) goes away.
+	// Restore the default route (if an exit node captured it) and drop our subnet
+	// routes before the interface -- their next hop -- goes away.
+	_DisableExitNode();
 	_TeardownRoutes();
 	// Haiku's ifconfig removes an interface with "--delete <iface>", not
 	// "<iface> delete" (which just prints a usage error).
@@ -1324,6 +1575,33 @@ local_ipv4(const char* host)
 	}
 	freeaddrinfo(ai);
 	return result;
+}
+
+
+// Resolve every IPv4 address a host maps to (control/DERP can be anycast to
+// several), appending each as a dotted string. Used to carve out our own
+// underlay endpoints from an exit node's full-tunnel capture.
+static void
+resolve_all_ipv4(const char* host, std::vector<BString>& out)
+{
+	if (host == NULL || *host == '\0')
+		return;
+	struct addrinfo hints;
+	struct addrinfo* ai = NULL;
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_DGRAM;
+	if (getaddrinfo(host, NULL, &hints, &ai) != 0)
+		return;
+	for (struct addrinfo* p = ai; p != NULL; p = p->ai_next) {
+		if (p->ai_family != AF_INET)
+			continue;
+		char ip[INET_ADDRSTRLEN];
+		struct sockaddr_in* sin = (struct sockaddr_in*)p->ai_addr;
+		if (inet_ntop(AF_INET, &sin->sin_addr, ip, sizeof(ip)) != NULL)
+			out.push_back(BString(ip));
+	}
+	freeaddrinfo(ai);
 }
 
 

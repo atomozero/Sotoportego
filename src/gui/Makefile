@@ -27,6 +27,8 @@ SRCS = \
 	CredentialsWindow.cpp \
 	TailscaleWindow.cpp \
 	PeersWindow.cpp \
+	TopologyView.cpp \
+	TopologyWindow.cpp \
 	MetricPill.cpp \
 	VaporettoWindow.cpp \
 	DeskbarIcon.cpp \

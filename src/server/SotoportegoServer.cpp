@@ -191,6 +191,20 @@ SotoportegoServer::MessageReceived(BMessage* message)
 		case kMsgConnectVPNGate:
 			_HandleConnectVPNGate(message);
 			break;
+		case kMsgSetExitNode:
+		{
+			// Route all traffic through the named Tailscale exit node (empty
+			// clears it). Only the Tailscale backend honours this; others report
+			// B_NOT_SUPPORTED.
+			const char* key = NULL;
+			if (message->FindString(kFieldExitNodeKey, &key) != B_OK)
+				key = "";
+			if (fBackend->SetExitNode(BString(key)) == B_NOT_SUPPORTED) {
+				fprintf(stderr, "[server] exit node not supported by the active "
+					"backend (%s)\n", fBackend->BackendName());
+			}
+			break;
+		}
 
 		// --- Internal: VPNGate catalogue arrived from the fetcher --------
 		case kMsgVPNGateFetched:
