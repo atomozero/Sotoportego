@@ -318,28 +318,26 @@ SotoportegoCLI::_PrintPeers(const BMessage* status)
 		const char* name = NULL;
 		const char* ip = NULL;
 		const char* path = NULL;
-		const char* nodeKey = NULL;
 		bool online = false;
 		bool exitCap = false;
 		bool exitOn = false;
 		peer.FindString(kFieldPeerName, &name);
 		peer.FindString(kFieldPeerIP, &ip);
 		peer.FindString(kFieldPeerPath, &path);
-		peer.FindString(kFieldPeerNodeKey, &nodeKey);
+		int64 tx = 0, rx = 0;
 		peer.FindBool(kFieldPeerOnline, &online);
 		peer.FindBool(kFieldPeerExitCap, &exitCap);
 		peer.FindBool(kFieldPeerExitOn, &exitOn);
+		peer.FindInt64(kFieldPeerTx, &tx);
+		peer.FindInt64(kFieldPeerRx, &rx);
 
-		BString keyShort(nodeKey != NULL ? nodeKey : "");
-		if (keyShort.Length() > 12)
-			keyShort.Truncate(12);
-		printf("  %-20s %-16s %-6s %-8s %s%s  [%s]\n",
+		printf("  %-20s %-16s %-6s %-8s  \xe2\x86\x91%-8lld \xe2\x86\x93%-8lld %s\n",
 			name != NULL ? name : "(unknown)",
 			ip != NULL && *ip != '\0' ? ip : "-",
 			path != NULL ? path : "-",
 			online ? "online" : "offline",
-			exitOn ? "exit:ACTIVE" : (exitCap ? "exit:available" : ""),
-			"", keyShort.String());
+			(long long)tx, (long long)rx,
+			exitOn ? "exit:ACTIVE" : (exitCap ? "exit:available" : ""));
 		count++;
 	}
 	if (count == 0)

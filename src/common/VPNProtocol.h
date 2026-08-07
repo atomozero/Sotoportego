@@ -172,6 +172,15 @@ static const char* const kFieldPeerPath		= "soto:peer:path";		// "direct"/"relay
 static const char* const kFieldPeerNodeKey	= "soto:peer:nodekey";	// node key hex
 static const char* const kFieldPeerExitCap	= "soto:peer:exitcap";	// bool: exit node
 static const char* const kFieldPeerExitOn	= "soto:peer:exiton";	// bool: active exit
+// Live/detail fields for the tailnet map: cumulative app bytes, the direct
+// endpoint (if any), the home DERP region + code, and seconds since the last
+// handshake (-1 if none).
+static const char* const kFieldPeerTx		= "soto:peer:tx";		// int64
+static const char* const kFieldPeerRx		= "soto:peer:rx";		// int64
+static const char* const kFieldPeerEndpoint	= "soto:peer:endpoint";	// "ip:port"
+static const char* const kFieldPeerDerp		= "soto:peer:derp";		// int32 region
+static const char* const kFieldPeerDerpCode	= "soto:peer:derpcode";	// e.g. "nyc"
+static const char* const kFieldPeerHsAge	= "soto:peer:hsage";	// int32 secs
 
 // C -> S command payload: the node key hex of the exit node to use ("" clears).
 static const char* const kFieldExitNodeKey	= "soto:exitNodeKey";

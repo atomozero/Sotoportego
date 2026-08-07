@@ -517,7 +517,7 @@ MainWindow::MessageReceived(BMessage* message)
 			// Open (or re-use) the tailnet map window and seed it with the
 			// latest peer snapshot, exactly like the peers window.
 			if (!fTopologyWindow.IsValid()) {
-				TopologyWindow* w = new TopologyWindow(this);
+				TopologyWindow* w = new TopologyWindow(this, fServer);
 				fTopologyWindow = BMessenger(w);
 				w->Show();
 			}

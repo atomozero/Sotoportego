@@ -230,6 +230,23 @@ TailscaleBackend::FillPeers(BMessage& out)
 		pm.AddBool(kFieldPeerExitCap, exitCap);
 		pm.AddBool(kFieldPeerExitOn, fActiveExitNode.Length() > 0
 			&& fActiveExitNode == p.nodeKeyHex);
+
+		// Live/detail fields for the tailnet map.
+		pm.AddInt64(kFieldPeerTx, (int64)p.wg.TxBytes());
+		pm.AddInt64(kFieldPeerRx, (int64)p.wg.RxBytes());
+		if (p.path.Mode() == ts::PATH_DIRECT
+				&& p.path.DirectEndpoint().Length() > 0)
+			pm.AddString(kFieldPeerEndpoint, p.path.DirectEndpoint());
+		else if (!p.endpoints.empty())
+			pm.AddString(kFieldPeerEndpoint, p.endpoints[0]);
+		pm.AddInt32(kFieldPeerDerp, p.derpRegion);
+		const ts::DerpRegion* dr = (p.derpRegion > 0)
+			? fSession.Netmap().DerpRegionById(p.derpRegion) : NULL;
+		if (dr != NULL && dr->regionCode.Length() > 0)
+			pm.AddString(kFieldPeerDerpCode, dr->regionCode);
+		pm.AddInt32(kFieldPeerHsAge,
+			p.wg.HasKeys() ? p.wg.SessionAgeSeconds(system_time()) : -1);
+
 		out.AddMessage(kFieldPeer, &pm);
 	}
 	fSessionLock.Unlock();

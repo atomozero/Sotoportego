@@ -110,7 +110,9 @@ WGPeer::WGPeer()
 	fEstablished(0),
 	fLastInitiation(0),
 	fLastSend(0),
-	fTestClock(0)
+	fTestClock(0),
+	fTxBytes(0),
+	fRxBytes(0)
 {
 	memset(fNodeKey, 0, sizeof(fNodeKey));
 	memset(fSendKey, 0, sizeof(fSendKey));
@@ -175,6 +177,7 @@ WGPeer::Encapsulate(const uint8* plain, size_t plainLen, uint8* out)
 		return 0;
 	fSendCounter++;
 	fLastSend = _Now();
+	fTxBytes += plainLen;	// count application payload only
 	return 16 + padded + 16;
 }
 
@@ -194,7 +197,10 @@ WGPeer::Decapsulate(const uint8* packet, size_t packetLen, uint8* out)
 	if (!_ReplayValidate(counter))
 		return -1;
 	size_t plainLen = cipherLen - 16;
-	return (ssize_t)ip_packet_length(out, plainLen);
+	ssize_t appLen = (ssize_t)ip_packet_length(out, plainLen);
+	if (appLen > 0)
+		fRxBytes += (uint64)appLen;
+	return appLen;
 }
 
 

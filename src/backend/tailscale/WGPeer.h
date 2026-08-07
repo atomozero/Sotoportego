@@ -41,6 +41,11 @@ public:
 									const uint8 recvKey[32], uint32 receiverIndex);
 			bool				HasKeys() const { return fHasKeys; }
 
+			// Cumulative application payload moved over this session, for the
+			// live traffic view (excludes headers/padding/keepalives).
+			uint64				TxBytes() const { return fTxBytes; }
+			uint64				RxBytes() const { return fRxBytes; }
+
 			// --- WireGuard Noise IKpsk2 handshake (initiator) ---------------
 			// Build the 148-byte type-1 handshake initiation to `out`, using our
 			// node private key and the peer's node public key; stashes the
@@ -153,6 +158,8 @@ private:
 			bigtime_t			fLastInitiation;	// last initiation we sent
 			bigtime_t			fLastSend;			// last transport packet sent
 			bigtime_t			fTestClock;			// 0 = real clock (test hook)
+			uint64				fTxBytes;			// app payload sent
+			uint64				fRxBytes;			// app payload received
 };
 
 }	// namespace ts
