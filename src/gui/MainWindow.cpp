@@ -69,6 +69,7 @@ static const uint32 kMsgAddTailscale		= 'gTsA';	// open the Tailscale dialog
 static const uint32 kMsgTailscaleOK			= 'gTsO';	// dialog -> create profile
 static const uint32 kMsgTailscaleSignup		= 'gTsS';	// open the account signup page
 static const uint32 kMsgTailscaleAdmin		= 'gTsD';	// open the web admin console
+static const uint32 kMsgSupportForum		= 'gSuF';	// open the community forum
 static const uint32 kMsgShowPeers			= 'gTsP';	// open the peers window
 static const uint32 kMsgShowTopology		= 'gTsM';	// open the tailnet map
 
@@ -80,6 +81,8 @@ static const uint32 kMsgShowTopology		= 'gTsM';	// open the tailnet map
 static const char* const kTailscaleSignupURL = "https://login.tailscale.com/start";
 // The Tailscale web admin console (current domain: console.tailscale.com).
 static const char* const kTailscaleAdminURL = "https://console.tailscale.com/admin";
+static const char* const kForumURL =
+	"https://forum.desktoponfire.com/d/17-sotoportego-a-native-vpn-client-for-haiku/";
 
 static const char* const kBackendName	= "OpenVPN";
 
@@ -203,6 +206,11 @@ MainWindow::_BuildLayout()
 	toolsMenu->AddItem(new BMenuItem("Remove Deskbar icon",
 		new BMessage(kMsgRemoveDeskbar)));
 	menuBar->AddItem(toolsMenu);
+
+	BMenu* supportMenu = new BMenu("Support");
+	supportMenu->AddItem(new BMenuItem("Community forum" B_UTF8_ELLIPSIS,
+		new BMessage(kMsgSupportForum)));
+	menuBar->AddItem(supportMenu);
 
 	fHeader = new HeaderView("header");
 	fHeader->SetEasterEggTarget(BMessenger(this), kMsgVaporetto);
@@ -493,6 +501,10 @@ MainWindow::MessageReceived(BMessage* message)
 			// Open the Tailscale signup page in the default web browser so a
 			// new user can create an account, then come back and add it here.
 			open_url(kTailscaleSignupURL);
+			break;
+		case kMsgSupportForum:
+			// Open the Sotoportego community forum thread.
+			open_url(kForumURL);
 			break;
 		case kMsgTailscaleAdmin:
 			// Open the Tailscale web admin console.
