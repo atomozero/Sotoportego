@@ -4,12 +4,34 @@
  */
 #include "SotoportegoApp.h"
 
-#include <AboutWindow.h>
-#include <Bitmap.h>
+#include <string.h>
 
-#include "HeaderView.h"
+#include <PropertyInfo.h>
+
+#include "AboutWindow.h"
 #include "MainWindow.h"
 #include "VPNProtocol.h"
+
+
+// Scripting suite: two executable properties that map onto the connect and
+// disconnect paths. Reachable as `hey Sotoportego Connect` / `Disconnect`.
+static property_info sPropertyList[] = {
+	{
+		const_cast<char*>("Connect"),
+		{ B_EXECUTE_PROPERTY, 0 },
+		{ B_DIRECT_SPECIFIER, 0 },
+		const_cast<char*>("Connect the selected VPN profile."),
+		0, {}, {}, {}
+	},
+	{
+		const_cast<char*>("Disconnect"),
+		{ B_EXECUTE_PROPERTY, 0 },
+		{ B_DIRECT_SPECIFIER, 0 },
+		const_cast<char*>("Disconnect the active VPN session."),
+		0, {}, {}, {}
+	},
+	{ 0, { 0 }, { 0 }, 0, 0, {}, {}, {} }
+};
 
 
 SotoportegoApp::SotoportegoApp()
@@ -31,24 +53,52 @@ SotoportegoApp::ReadyToRun()
 void
 SotoportegoApp::AboutRequested()
 {
-	BAboutWindow* about = new BAboutWindow("Sotoportego", kGUISignature);
+	(new AboutWindow())->Show();
+}
 
-	BBitmap* icon = HeaderView::MakeLogoBitmap(64);
-	if (icon != NULL)
-		about->SetIcon(icon);
 
-	about->SetVersion("0.1.2 (development)");
-	about->AddCopyright(2026, "atomozero");
-	about->AddDescription(
-		"Sotoportego is a native VPN client for Haiku. The daemon owns the "
-		"VPN lifecycle and is the single source of truth; the GUI, CLI and "
-		"the upcoming Deskbar replicant are thin front-ends that subscribe "
-		"to its broadcasts over BMessage.\n\n"
-		"Milestone 1 skeleton \xe2\x80\x94 the connection is still a stub.");
-	const char* authors[] = {
-		"atomozero",
-		NULL
-	};
-	about->AddAuthors(authors);
-	about->Show();
+status_t
+SotoportegoApp::GetSupportedSuites(BMessage* data)
+{
+	data->AddString("suites", "suite/vnd.atomozero-Sotoportego");
+	BPropertyInfo info(sPropertyList);
+	data->AddFlat("messages", &info);
+	return BApplication::GetSupportedSuites(data);
+}
+
+
+BHandler*
+SotoportegoApp::ResolveSpecifier(BMessage* message, int32 index,
+	BMessage* specifier, int32 what, const char* property)
+{
+	BPropertyInfo info(sPropertyList);
+	if (info.FindMatch(message, index, specifier, what, property) >= 0)
+		return this;
+	return BApplication::ResolveSpecifier(message, index, specifier, what,
+		property);
+}
+
+
+void
+SotoportegoApp::MessageReceived(BMessage* message)
+{
+	if (message->what == B_EXECUTE_PROPERTY) {
+		const char* property = NULL;
+		if (message->GetCurrentSpecifier(NULL, NULL, NULL, &property) == B_OK
+				&& property != NULL && fWindow != NULL) {
+			uint32 action = 0;
+			if (strcmp(property, "Connect") == 0)
+				action = kMsgAutomationConnect;
+			else if (strcmp(property, "Disconnect") == 0)
+				action = kMsgAutomationDisconnect;
+			if (action != 0) {
+				fWindow->PostMessage(action);
+				BMessage reply(B_REPLY);
+				reply.AddInt32("error", B_OK);
+				message->SendReply(&reply);
+				return;
+			}
+		}
+	}
+	BApplication::MessageReceived(message);
 }

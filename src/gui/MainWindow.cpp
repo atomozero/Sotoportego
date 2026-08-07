@@ -31,11 +31,15 @@
 #include <ScrollView.h>
 #include <StringView.h>
 #include <TabView.h>
+#include <Url.h>
 #include <View.h>
 
 #include "CredentialsWindow.h"
 #include "DeskbarIcon.h"
 #include "HeaderView.h"
+#include "PeersWindow.h"
+#include "TopologyWindow.h"
+#include "TailscaleWindow.h"
 #include "OpenVPNConfigParser.h"
 #include "WireGuardConfigParser.h"
 #include "VPNMapWindow.h"
@@ -61,8 +65,41 @@ static const uint32 kMsgInstallDeskbar		= 'gDIn';
 static const uint32 kMsgRemoveDeskbar		= 'gDRm';
 static const uint32 kMsgBrowseOnMap			= 'gMap';
 static const uint32 kMsgUptimeTick			= 'gUpT';
+static const uint32 kMsgAddTailscale		= 'gTsA';	// open the Tailscale dialog
+static const uint32 kMsgTailscaleOK			= 'gTsO';	// dialog -> create profile
+static const uint32 kMsgTailscaleSignup		= 'gTsS';	// open the account signup page
+static const uint32 kMsgTailscaleAdmin		= 'gTsD';	// open the web admin console
+static const uint32 kMsgSupportForum		= 'gSuF';	// open the community forum
+static const uint32 kMsgShowPeers			= 'gTsP';	// open the peers window
+static const uint32 kMsgShowTopology		= 'gTsM';	// open the tailnet map
+
+// Where a new user goes to create a Tailscale account (opens in the browser).
+// Tailscale has no email/password signup: an account is created by signing in
+// with an identity provider (Google, Microsoft, GitHub, ...) the first time.
+// This is the canonical start page; already-signed-in users get redirected to
+// their admin console.
+static const char* const kTailscaleSignupURL = "https://login.tailscale.com/start";
+// The Tailscale web admin console (current domain: console.tailscale.com).
+static const char* const kTailscaleAdminURL = "https://console.tailscale.com/admin";
+static const char* const kForumURL =
+	"https://forum.desktoponfire.com/d/17-sotoportego-a-native-vpn-client-for-haiku/";
 
 static const char* const kBackendName	= "OpenVPN";
+
+
+// Open a URL in the user's default browser. Uses BUrl's preferred-application
+// path rather than be_roster->Launch("application/x-vnd.Be-URL.https", ...):
+// the latter reports "Application could not be found" on stock Haiku because
+// nothing is registered under that handler MIME, whereas BUrl resolves the
+// https scheme correctly. Returns true on success.
+static bool
+open_url(const char* url)
+{
+	if (url == NULL || *url == '\0')
+		return false;
+	BUrl parsed(url, true);
+	return parsed.OpenWithPreferredApplication(false) == B_OK;
+}
 
 
 // BKeyStore helpers (defined at the bottom of the file).
@@ -71,6 +108,11 @@ static bool		load_stored_credentials(const char* profileName,
 static void		save_credentials(const char* profileName, const char* user,
 					const char* password);
 static void		forget_credentials(const char* profileName);
+// Tailscale pre-auth key, stored as its own keystore entry (namespaced so it
+// never collides with a profile's OpenVPN password).
+static bool		load_authkey(const char* profileName, BString& outKey);
+static void		save_authkey(const char* profileName, const char* authKey);
+static void		forget_authkey(const char* profileName);
 
 
 MainWindow::MainWindow()
@@ -85,6 +127,7 @@ MainWindow::MainWindow()
 	fProtocolLabel(NULL),
 	fTunnelIPValue(NULL),
 	fExternalIPValue(NULL),
+	fConnNotice(NULL),
 	fSinceValue(NULL),
 	fDownValue(NULL),
 	fUpValue(NULL),
@@ -101,7 +144,8 @@ MainWindow::MainWindow()
 	fSelectedName(),
 	fCountry(),
 	fLastConnectProfile(),
-	fLastUsedStoredCredentials(false)
+	fLastUsedStoredCredentials(false),
+	fHasConnectedProfile(false)
 {
 	_BuildLayout();
 	_UpdateForState(VPN_STATE_DISCONNECTED, NULL);
@@ -131,23 +175,42 @@ MainWindow::_BuildLayout()
 
 	BMenu* connectionMenu = new BMenu("Connection");
 	connectionMenu->AddItem(new BMenuItem("Connect",
-		new BMessage(kMsgConnectAction)));
+		new BMessage(kMsgConnectAction), 'K'));
 	connectionMenu->AddItem(new BMenuItem("Disconnect",
-		new BMessage(kMsgDisconnectAction)));
+		new BMessage(kMsgDisconnectAction), 'D'));
 	connectionMenu->AddSeparatorItem();
 	connectionMenu->AddItem(new BMenuItem("Forget saved password",
 		new BMessage(kMsgForgetPassword)));
 	menuBar->AddItem(connectionMenu);
 
+	BMenu* tailscaleMenu = new BMenu("Tailscale");
+	tailscaleMenu->AddItem(new BMenuItem("Add Tailscale network" B_UTF8_ELLIPSIS,
+		new BMessage(kMsgAddTailscale), 'T'));
+	tailscaleMenu->AddItem(new BMenuItem("Show peers" B_UTF8_ELLIPSIS,
+		new BMessage(kMsgShowPeers), 'P'));
+	tailscaleMenu->AddItem(new BMenuItem("Tailnet map" B_UTF8_ELLIPSIS,
+		new BMessage(kMsgShowTopology), 'G'));
+	tailscaleMenu->AddSeparatorItem();
+	tailscaleMenu->AddItem(new BMenuItem("Create a Tailscale account"
+		B_UTF8_ELLIPSIS, new BMessage(kMsgTailscaleSignup)));
+	tailscaleMenu->AddItem(new BMenuItem("Open admin console"
+		B_UTF8_ELLIPSIS, new BMessage(kMsgTailscaleAdmin)));
+	menuBar->AddItem(tailscaleMenu);
+
 	BMenu* toolsMenu = new BMenu("Tools");
 	toolsMenu->AddItem(new BMenuItem("Browse servers on map" B_UTF8_ELLIPSIS,
-		new BMessage(kMsgBrowseOnMap)));
+		new BMessage(kMsgBrowseOnMap), 'M'));
 	toolsMenu->AddSeparatorItem();
 	toolsMenu->AddItem(new BMenuItem("Install Deskbar icon",
 		new BMessage(kMsgInstallDeskbar)));
 	toolsMenu->AddItem(new BMenuItem("Remove Deskbar icon",
 		new BMessage(kMsgRemoveDeskbar)));
 	menuBar->AddItem(toolsMenu);
+
+	BMenu* supportMenu = new BMenu("Support");
+	supportMenu->AddItem(new BMenuItem("Community forum" B_UTF8_ELLIPSIS,
+		new BMessage(kMsgSupportForum)));
+	menuBar->AddItem(supportMenu);
 
 	fHeader = new HeaderView("header");
 	fHeader->SetEasterEggTarget(BMessenger(this), kMsgVaporetto);
@@ -237,6 +300,18 @@ MainWindow::_BuildConnectionTab()
 	fExternalIPValue = new BStringView("externalIPValue", "\xe2\x80\x94");
 	fExternalIPValue->SetFont(be_bold_font);
 
+	// Shown only when the profile selected in the list isn't the one actually
+	// connected, so the details above are never silently misread.
+	fConnNotice = new BStringView("connNotice", "");
+	BFont noticeFont(be_plain_font);
+	noticeFont.SetSize(be_plain_font->Size() - 1);
+	fConnNotice->SetFont(&noticeFont);
+	fConnNotice->SetHighColor(tint_color(ui_color(B_PANEL_TEXT_COLOR), 0.65f));
+	// Don't let the notice widen the window: a small min width plus end
+	// truncation keep it inside whatever width the details already need.
+	fConnNotice->SetExplicitMinSize(BSize(40, B_SIZE_UNSET));
+	fConnNotice->SetTruncation(B_TRUNCATE_END);
+
 	BLayoutBuilder::Grid<>(detailsBox, B_USE_DEFAULT_SPACING,
 			B_USE_SMALL_SPACING)
 		.SetInsets(B_USE_DEFAULT_SPACING, B_USE_BIG_INSETS,
@@ -250,7 +325,8 @@ MainWindow::_BuildConnectionTab()
 		.Add(new BStringView("tunnelIPCaption", "Tunnel IP:"), 0, 3)
 		.Add(fTunnelIPValue, 1, 3)
 		.Add(new BStringView("externalIPCaption", "External IP:"), 0, 4)
-		.Add(fExternalIPValue, 1, 4);
+		.Add(fExternalIPValue, 1, 4)
+		.Add(fConnNotice, 0, 5, 2, 1);
 
 	// The primary Connect/Disconnect button lives in the header banner
 	// (see _BuildLayout), not at the bottom of this tab.
@@ -331,9 +407,11 @@ MainWindow::MessageReceived(BMessage* message)
 			break;
 
 		case kMsgConnectAction:
+		case kMsgAutomationConnect:	// hey: `Sotoportego Connect`
 			_BeginConnectFlow();
 			break;
 		case kMsgDisconnectAction:
+		case kMsgAutomationDisconnect:	// hey: `Sotoportego Disconnect`
 			_SendDisconnect();
 			break;
 
@@ -394,6 +472,84 @@ MainWindow::MessageReceived(BMessage* message)
 			// now (will become a daemon-broadcast list later).
 			VPNMapWindow* window = new VPNMapWindow();
 			window->Show();
+			break;
+		}
+		case kMsgAddTailscale:
+		{
+			// Collect a name + control server, then create a Tailscale profile.
+			TailscaleWindow* dialog = new TailscaleWindow(this,
+				BMessenger(this), kMsgTailscaleOK);
+			dialog->Show();
+			break;
+		}
+		case kMsgTailscaleOK:
+		{
+			const char* name = NULL;
+			const char* url = NULL;
+			const char* authKey = NULL;
+			if (message->FindString(kFieldTsName, &name) != B_OK
+					|| name == NULL || *name == '\0')
+				break;
+			if (message->FindString(kFieldTsUrl, &url) != B_OK || url == NULL)
+				url = "controlplane.tailscale.com";
+			if (message->FindString(kFieldTsAuthKey, &authKey) != B_OK)
+				authKey = "";
+			_CreateTailscaleProfile(name, url, authKey);
+			break;
+		}
+		case kMsgTailscaleSignup:
+			// Open the Tailscale signup page in the default web browser so a
+			// new user can create an account, then come back and add it here.
+			open_url(kTailscaleSignupURL);
+			break;
+		case kMsgSupportForum:
+			// Open the Sotoportego community forum thread.
+			open_url(kForumURL);
+			break;
+		case kMsgTailscaleAdmin:
+			// Open the Tailscale web admin console.
+			open_url(kTailscaleAdminURL);
+			break;
+		case kMsgShowPeers:
+		{
+			// Open (or re-use) the peers window and seed it with the latest
+			// peer snapshot. fPeersWindow.IsValid() goes false once the window
+			// is closed, so a new one is created on the next request.
+			if (!fPeersWindow.IsValid()) {
+				PeersWindow* w = new PeersWindow(this);
+				fPeersWindow = BMessenger(w);
+				w->Show();
+			}
+			fLastPeers.what = kMsgPeersData;
+			fPeersWindow.SendMessage(&fLastPeers);
+			break;
+		}
+		case kMsgShowTopology:
+		{
+			// Open (or re-use) the tailnet map window and seed it with the
+			// latest peer snapshot, exactly like the peers window.
+			if (!fTopologyWindow.IsValid()) {
+				TopologyWindow* w = new TopologyWindow(this, fServer);
+				fTopologyWindow = BMessenger(w);
+				w->Show();
+			}
+			fLastPeers.what = kMsgPeersData;
+			fTopologyWindow.SendMessage(&fLastPeers);
+			break;
+		}
+		case kMsgExitNodeRequest:
+		{
+			// The peers window asked to (de)select an exit node; forward it to
+			// the daemon, which routes all traffic through that peer.
+			if (!fServer.IsValid())
+				break;
+			const char* key = NULL;
+			if (message->FindString(kFieldExitNodeKey, &key) != B_OK)
+				key = "";
+			BMessage set(kMsgSetExitNode);
+			set.AddString(kFieldExitNodeKey, key);
+			set.AddMessenger(kFieldClient, BMessenger(this));
+			fServer.SendMessage(&set);
 			break;
 		}
 		case kMsgProfileSelected:
@@ -461,8 +617,23 @@ MainWindow::MessageReceived(BMessage* message)
 					|| (VPNState)state == VPN_STATE_ERROR) {
 				fCountry = "";
 			}
+			// Which profile is actually connected (the daemon includes it while
+			// a session is live). Drives the Server box + the "different
+			// selection" notice via _RefreshDetails below.
+			BMessage connectedArchive;
+			if (message->FindMessage(kFieldConnectedProfile, &connectedArchive)
+					== B_OK) {
+				fConnectedProfile = VPNProfile();
+				fConnectedProfile.Unarchive(connectedArchive);
+				fHasConnectedProfile = true;
+			} else {
+				fHasConnectedProfile = false;
+			}
+
 			_UpdateForState((VPNState)state, detail);
 			_ApplyStats(message);
+			_UpdatePeers(message);
+			_RefreshDetails();
 			break;
 		}
 
@@ -542,6 +713,17 @@ MainWindow::_BeginConnectFlow()
 		return;
 	}
 
+	// Tailscale never uses a username/password: it authenticates through the
+	// browser (SSO) or an optional pre-auth key. Skip the credentials prompt
+	// entirely and connect straight away -- _SendConnectWith pulls the auth key
+	// from the keystore if one was set, otherwise the daemon opens the login
+	// URL.
+	if (selected->fBackendType == VPN_BACKEND_TAILSCALE) {
+		fLastUsedStoredCredentials = false;
+		_SendConnectWith(NULL, NULL);
+		return;
+	}
+
 	// If the user previously asked us to remember this profile's password,
 	// skip the dialog and go straight to Connect. The keystore returns
 	// B_ERROR (and may prompt to unlock its keyring) on first access per
@@ -591,6 +773,13 @@ MainWindow::_SendConnectWith(const char* username, const char* password)
 		connect.AddString(kFieldUsername, username);
 	if (password != NULL && password[0] != '\0')
 		connect.AddString(kFieldPassword, password);
+	// For a Tailscale profile, pull the optional pre-auth key from the keystore
+	// and pass it transiently. Non-Tailscale profiles have no such entry, so
+	// this is a no-op for them.
+	BString authKey;
+	if (selected->fBackendType == VPN_BACKEND_TAILSCALE
+			&& load_authkey(selected->fName.String(), authKey))
+		connect.AddString(kFieldAuthKey, authKey);
 	fServer.SendMessage(&connect);
 }
 
@@ -615,6 +804,11 @@ MainWindow::_UpdateForState(VPNState state, const char* detail)
 
 	const char* action = (state == VPN_STATE_DISCONNECTED
 		|| state == VPN_STATE_ERROR) ? "Connect" : "Disconnect";
+
+	// A Tailscale profile awaiting interactive login reports its browser
+	// AuthURL in the status detail; open it once so the user can complete login.
+	if (state == VPN_STATE_AUTHENTICATING)
+		_MaybeOpenAuthURL(detail);
 
 	const VPNProfile* selected = _SelectedProfile();
 
@@ -695,6 +889,51 @@ MainWindow::_UpdateForState(VPNState state, const char* detail)
 			alert->Go(NULL);
 		}
 	}
+}
+
+
+void
+MainWindow::_MaybeOpenAuthURL(const char* detail)
+{
+	if (detail == NULL)
+		return;
+	// Extract the first https:// token from the status detail.
+	const char* start = strstr(detail, "https://");
+	if (start == NULL)
+		return;
+	const char* end = start;
+	while (*end != '\0' && *end != ' ' && *end != '\t' && *end != '\n')
+		end++;
+	BString url(start, end - start);
+	if (url.Length() == 0 || url == fLastAuthURL)
+		return;	// already handled this login URL
+
+	fLastAuthURL = url;
+	_AppendEvent(BString("Opening login page: ").Append(url).String());
+	// Open the URL in the default web browser.
+	open_url(url.String());
+}
+
+
+void
+MainWindow::_UpdatePeers(const BMessage* status)
+{
+	// Snapshot the peer array from the status broadcast (empty for non-
+	// Tailscale sessions) and push it to the peers window if it's open.
+	fLastPeers.MakeEmpty();
+	fLastPeers.what = kMsgPeersData;
+	// Carry the self tailnet IP so the map can label its centre node.
+	const char* selfIP = NULL;
+	if (status->FindString(kFieldLocalIP, &selfIP) == B_OK && selfIP != NULL)
+		fLastPeers.AddString(kFieldLocalIP, selfIP);
+	BMessage peer;
+	for (int32 i = 0; status->FindMessage(kFieldPeer, i, &peer) == B_OK; i++)
+		fLastPeers.AddMessage(kFieldPeer, &peer);
+
+	if (fPeersWindow.IsValid())
+		fPeersWindow.SendMessage(&fLastPeers);
+	if (fTopologyWindow.IsValid())
+		fTopologyWindow.SendMessage(&fLastPeers);
 }
 
 
@@ -828,11 +1067,23 @@ MainWindow::_RefreshDetails()
 	if (fRemoveButton != NULL)
 		fRemoveButton->SetEnabled(hasSelection);
 
+	// The Server box must describe the profile that's actually CONNECTED, not
+	// whatever is highlighted in the list. When a session is live we show the
+	// connected profile (broadcast by the daemon) and, if the user has selected
+	// a different one, a notice so the two are never confused.
+	const VPNProfile* shown = hasSelection ? selected : NULL;
+	bool differs = false;
+	if (fHasConnectedProfile) {
+		shown = &fConnectedProfile;
+		differs = hasSelection
+			&& selected->fName != fConnectedProfile.fName;
+	}
+
 	if (fServerLabel != NULL) {
-		if (hasSelection) {
+		if (shown != NULL) {
 			char buf[128];
 			snprintf(buf, sizeof(buf), "%s:%u",
-				selected->fServer.String(), (unsigned)selected->fPort);
+				shown->fServer.String(), (unsigned)shown->fPort);
 			fServerLabel->SetText(buf);
 		} else {
 			fServerLabel->SetText("\xe2\x80\x94");
@@ -840,19 +1091,35 @@ MainWindow::_RefreshDetails()
 	}
 
 	if (fProtocolLabel != NULL) {
-		fProtocolLabel->SetText(hasSelection
-			? selected->fProtocol.String() : "\xe2\x80\x94");
+		const char* protocol = "\xe2\x80\x94";
+		if (shown != NULL) {
+			if (shown->fProtocol.Length() > 0)
+				protocol = shown->fProtocol.String();
+			else if (shown->fBackendType == VPN_BACKEND_TAILSCALE)
+				protocol = "WireGuard";	// Tailscale tunnels WireGuard
+		}
+		fProtocolLabel->SetText(protocol);
 	}
 
 	if (fBackendLabel != NULL) {
 		const char* backend = "\xe2\x80\x94";
-		if (hasSelection) {
-			backend = selected->fBackendType == VPN_BACKEND_WIREGUARD
-				? "WireGuard"
-				: selected->fBackendType == VPN_BACKEND_IPSEC
-					? "IPSec" : "OpenVPN";
+		if (shown != NULL) {
+			switch (shown->fBackendType) {
+				case VPN_BACKEND_WIREGUARD:	backend = "WireGuard";	break;
+				case VPN_BACKEND_TAILSCALE:	backend = "Tailscale";	break;
+				case VPN_BACKEND_IPSEC:		backend = "IPSec";		break;
+				default:					backend = "OpenVPN";	break;
+			}
 		}
 		fBackendLabel->SetText(backend);
+	}
+
+	if (fConnNotice != NULL) {
+		// Fixed-length, name-free message so a long profile name can never
+		// stretch the window; the connected identity is already shown above.
+		fConnNotice->SetText(differs
+			? "\xe2\x84\xb9 Showing the connected VPN, not the selected profile."
+			: "");
 	}
 
 	if (fActionButton != NULL) {
@@ -960,6 +1227,65 @@ MainWindow::_ImportFile(const entry_ref& ref)
 
 
 void
+MainWindow::_CreateTailscaleProfile(const char* name, const char* controlURL,
+	const char* authKey)
+{
+	if (!fServer.IsValid() || name == NULL || *name == '\0')
+		return;
+
+	// Confirm before replacing an existing profile of the same name.
+	for (size_t i = 0; i < fProfiles.size(); i++) {
+		if (fProfiles[i].fName == name) {
+			BString question;
+			question << "A profile named '" << name << "' already exists.\n\n"
+				   "Replace it?";
+			BAlert* alert = new BAlert("overwriteProfile", question.String(),
+				"Cancel", "Replace");
+			alert->SetShortcut(0, B_ESCAPE);
+			if (alert->Go() != 1)
+				return;
+			break;
+		}
+	}
+
+	VPNProfile profile;
+	profile.fBackendType = VPN_BACKEND_TAILSCALE;
+	profile.fName = name;
+	// The control server (public coordination server or a Headscale URL) rides
+	// on fServer; the daemon defaults it to controlplane.tailscale.com if empty.
+	profile.fServer = (controlURL != NULL && *controlURL != '\0')
+		? controlURL : "controlplane.tailscale.com";
+	profile.fPort = 443;
+	profile.fProtocol = "";
+	profile.fConfigPath = "";
+
+	// The optional pre-auth key is a secret: keep it in the keystore, never in
+	// the on-disk profile. An empty key clears any previous one (e.g. when the
+	// user replaces a profile) and leaves the browser-SSO path in place.
+	bool hasKey = authKey != NULL && *authKey != '\0';
+	if (hasKey)
+		save_authkey(name, authKey);
+	else
+		forget_authkey(name);
+
+	// Optimistically select the new profile once the server echoes the list.
+	fSelectedName = profile.fName;
+
+	BMessage archive;
+	profile.Archive(&archive);
+	BMessage save(kMsgSaveProfile);
+	save.AddMessenger(kFieldClient, BMessenger(this));
+	save.AddMessage(kFieldProfile, &archive);
+	fServer.SendMessage(&save);
+
+	_AppendEvent(BString("Added Tailscale network '").Append(name).Append(
+		hasKey
+			? "' \xe2\x80\x94 select it and click Connect (pre-auth key set)."
+			: "' \xe2\x80\x94 select it and click Connect to sign in.").String());
+}
+
+
+void
 MainWindow::_DeleteSelectedProfile()
 {
 	if (!fServer.IsValid())
@@ -982,8 +1308,10 @@ MainWindow::_DeleteSelectedProfile()
 	fServer.SendMessage(&del);
 
 	// Drop any stored password for this profile too: leaving a stale key
-	// behind would resurface on a re-import with the same name.
+	// behind would resurface on a re-import with the same name. Same for a
+	// Tailscale pre-auth key.
 	forget_credentials(selected->fName.String());
+	forget_authkey(selected->fName.String());
 
 	fSelectedName = "";
 }
@@ -1072,6 +1400,63 @@ forget_credentials(const char* profileName)
 	BKeyStore keystore;
 	BPasswordKey existing;
 	if (keystore.GetKey(B_KEY_TYPE_PASSWORD, profileName, existing) == B_OK)
+		keystore.RemoveKey(existing);
+}
+
+
+// The Tailscale pre-auth key gets its own keystore entry under a distinct
+// identifier ("tsauth:<profile>") so it never clashes with the OpenVPN password
+// stored under the bare profile name.
+static BString
+_authKeyId(const char* profileName)
+{
+	BString id("tsauth:");
+	id << profileName;
+	return id;
+}
+
+
+static bool
+load_authkey(const char* profileName, BString& outKey)
+{
+	if (profileName == NULL || *profileName == '\0')
+		return false;
+	BKeyStore keystore;
+	BPasswordKey key;
+	if (keystore.GetKey(B_KEY_TYPE_PASSWORD, _authKeyId(profileName).String(),
+			key) != B_OK)
+		return false;
+	outKey = key.Password();
+	return outKey.Length() > 0;
+}
+
+
+static void
+save_authkey(const char* profileName, const char* authKey)
+{
+	if (profileName == NULL || *profileName == '\0' || authKey == NULL
+			|| *authKey == '\0')
+		return;
+	BKeyStore keystore;
+	BString id = _authKeyId(profileName);
+	// AddKey refuses to overwrite, so clear any prior key first.
+	BPasswordKey existing;
+	if (keystore.GetKey(B_KEY_TYPE_PASSWORD, id.String(), existing) == B_OK)
+		keystore.RemoveKey(existing);
+	BPasswordKey key(authKey, B_KEY_PURPOSE_NETWORK, id.String());
+	keystore.AddKey(key);
+}
+
+
+static void
+forget_authkey(const char* profileName)
+{
+	if (profileName == NULL || *profileName == '\0')
+		return;
+	BKeyStore keystore;
+	BPasswordKey existing;
+	if (keystore.GetKey(B_KEY_TYPE_PASSWORD, _authKeyId(profileName).String(),
+			existing) == B_OK)
 		keystore.RemoveKey(existing);
 }
 

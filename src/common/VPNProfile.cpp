@@ -17,7 +17,8 @@ VPNProfile::VPNProfile()
 	fPort(1194),
 	fUsername(""),
 	fProtocol("udp"),
-	fConfigPath("")
+	fConfigPath(""),
+	fAuthKey("")
 {
 }
 
@@ -46,6 +47,9 @@ VPNProfile::Archive(BMessage* into) const
 		result = into->AddString(kFieldProfileProtocol, fProtocol);
 	if (result == B_OK)
 		result = into->AddString(kFieldProfileConfigPath, fConfigPath);
+	// fAuthKey is intentionally NOT archived: the Tailscale pre-auth key is a
+	// secret and lives in the BKeyStore, not in the on-disk profile store. It
+	// reaches the backend as a transient connect-time field (kFieldAuthKey).
 
 	return result;
 }
@@ -71,6 +75,8 @@ VPNProfile::Unarchive(const BMessage& from)
 		fProtocol = stringValue;
 	if (from.FindString(kFieldProfileConfigPath, &stringValue) == B_OK)
 		fConfigPath = stringValue;
+	if (from.FindString(kFieldProfileAuthKey, &stringValue) == B_OK)
+		fAuthKey = stringValue;
 
 	return B_OK;
 }

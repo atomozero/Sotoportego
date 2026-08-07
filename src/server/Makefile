@@ -29,10 +29,37 @@ SRCS = \
 	../backend/TunDevice.cpp \
 	../backend/WireGuardBackend.cpp \
 	../backend/WireGuardCrypto.cpp \
+	../backend/tailscale/TailscaleBackend.cpp \
+	../backend/tailscale/TSIdentity.cpp \
+	../backend/tailscale/TSNoise.cpp \
+	../backend/tailscale/TSControl.cpp \
+	../backend/tailscale/TSControlClient.cpp \
+	../backend/tailscale/TSControlConn.cpp \
+	../backend/tailscale/TSControlSession.cpp \
+	../backend/tailscale/TSHttp2.cpp \
+	../backend/tailscale/TSHpack.cpp \
+	../backend/tailscale/TSRegister.cpp \
+	../backend/tailscale/TSMap.cpp \
+	../backend/tailscale/TSJson.cpp \
+	../backend/tailscale/TSNetmap.cpp \
+	../backend/tailscale/NaClBox.cpp \
+	../backend/tailscale/TSStun.cpp \
+	../backend/tailscale/TSDisco.cpp \
+	../backend/tailscale/TSDerp.cpp \
+	../backend/tailscale/MagicSock.cpp \
+	../backend/tailscale/WGPeer.cpp \
+	../backend/tailscale/PeerPath.cpp \
+	../backend/tailscale/TSMagicDns.cpp \
+	../backend/tailscale/TSPeerSet.cpp \
+	../backend/tailscale/TSSessionState.cpp \
+	../backend/tailscale/TSTls.cpp \
+	../backend/tailscale/TSBackoff.cpp \
+	../backend/tailscale/TSRoutes.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/WireGuardConfigParser.cpp \
 	../common/WireGuardRoutes.cpp \
 	../common/CountryCentroids.cpp \
+	../common/TSConfig.cpp \
 	../common/VPNProfile.cpp \
 	../common/VPNState.cpp \
 	../common/VPNStats.cpp
@@ -44,10 +71,11 @@ RSRCS =
 
 # Libraries to link against. libbe provides BApplication / BMessage / etc.;
 # libnetwork carries the POSIX socket API the backends use; libcrypto (OpenSSL)
-# provides X25519 and ChaCha20-Poly1305 for the WireGuard handshake.
+# provides X25519 and ChaCha20-Poly1305 for the WireGuard handshake; libssl is
+# the TLS client transport for the Tailscale control channel and DERP.
 # $(STDCPPLIBS) pulls in libstdc++/libsupc++ — the makefile-engine links with
 # `cc`, which does not add the C++ runtime itself.
-LIBS = be network crypto $(STDCPPLIBS)
+LIBS = be network crypto ssl $(STDCPPLIBS)
 
 # Additional paths to directories following the standard libXXX.so layout.
 LIBPATHS =
@@ -56,7 +84,7 @@ LIBPATHS =
 SYSTEM_INCLUDE_PATHS =
 
 # Additional paths to look for local headers.
-LOCAL_INCLUDE_PATHS = ../common ../backend
+LOCAL_INCLUDE_PATHS = ../common ../backend ../backend/tailscale
 
 # Level of optimization: none, some, full.
 OPTIMIZE := some

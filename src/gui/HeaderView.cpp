@@ -68,7 +68,7 @@ _AccentFor(VPNState state)
 
 HeaderView::HeaderView(const char* name)
 	:
-	BView(name, B_WILL_DRAW | B_SUPPORTS_LAYOUT | B_FULL_UPDATE_ON_RESIZE),
+	BView(name, B_WILL_DRAW | B_FULL_UPDATE_ON_RESIZE),
 	fState(VPN_STATE_DISCONNECTED),
 	fSubtitle("Disconnected"),
 	fActionButton(NULL),
@@ -125,6 +125,12 @@ HeaderView::SetActionButton(BButton* button)
 	if (button == NULL || button == fActionButton)
 		return;
 	fActionButton = button;
+
+	// The banner is a custom-drawn view without B_SUPPORTS_LAYOUT, so the
+	// button is a plain hand-placed child: we own its frame and reposition it
+	// from FrameResized. (An internal BLayout collapses the banner to the
+	// button's own height and fights the fixed 64px sizing, so we don't use
+	// one here.)
 	AddChild(button);
 	_LayoutActionButton();
 }
@@ -136,10 +142,9 @@ HeaderView::_LayoutActionButton()
 	if (fActionButton == NULL)
 		return;
 
-	// Right-aligned, vertically centred in the banner. The label toggles
-	// between "Connect" and "Disconnect", so size to the wider preferred
-	// width once and keep it fixed to avoid the button jumping as the state
-	// changes.
+	// Right-aligned against the banner's right margin, vertically centred in
+	// the 64px strip. A width floor keeps it from jumping as the label toggles
+	// between the (narrower) "Connect" and the (wider) "Disconnect".
 	BSize preferred = fActionButton->PreferredSize();
 	BRect bounds = Bounds();
 	float width = preferred.width;
@@ -149,8 +154,33 @@ HeaderView::_LayoutActionButton()
 	float left = bounds.right - kButtonMargin - width;
 	float top = floorf((bounds.Height() - height) / 2.0f);
 
-	fActionButton->MoveTo(left, top);
-	fActionButton->ResizeTo(width, height);
+	// Idempotent: only touch the child when the target actually changed, so
+	// calling this from Draw() (the first place Bounds() is final -- neither
+	// AttachedToWindow nor FrameResized fires with the real height during the
+	// initial layout pass) can't spiral into a resize/redraw loop.
+	BRect target(left, top, left + width, top + height);
+	if (fActionButton->Frame() != target) {
+		fActionButton->MoveTo(left, top);
+		fActionButton->ResizeTo(width, height);
+	}
+}
+
+
+void
+HeaderView::AttachedToWindow()
+{
+	BView::AttachedToWindow();
+	// By the time we're attached the parent layout has assigned our final
+	// frame, so this is the first place the banner's real height is known.
+	_LayoutActionButton();
+}
+
+
+void
+HeaderView::FrameResized(float width, float height)
+{
+	BView::FrameResized(width, height);
+	_LayoutActionButton();
 }
 
 
@@ -158,6 +188,11 @@ void
 HeaderView::Draw(BRect /*updateRect*/)
 {
 	BRect bounds = Bounds();
+
+	// Position the hosted button here: this is the first place the banner's
+	// real frame is known (see _LayoutActionButton for why). The call is
+	// idempotent, so it's a no-op once the button is seated.
+	_LayoutActionButton();
 
 	// Solid slate background.
 	SetHighColor(kHeaderBg);
@@ -237,14 +272,6 @@ HeaderView::_DrawLogoTile(BRect rect)
 	float radius = rect.Width() * 0.18f;
 	SetHighColor(kLogoFill);
 	FillRoundRect(rect, radius, radius);
-}
-
-
-void
-HeaderView::FrameResized(float width, float height)
-{
-	BView::FrameResized(width, height);
-	_LayoutActionButton();
 }
 
 

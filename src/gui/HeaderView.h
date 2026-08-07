@@ -40,6 +40,7 @@ public:
 			void				SetActionButton(BButton* button);
 
 	virtual	void				Draw(BRect updateRect);
+	virtual	void				AttachedToWindow();
 	virtual	void				FrameResized(float width, float height);
 	virtual	void				MouseDown(BPoint where);
 	virtual	BSize				MinSize();

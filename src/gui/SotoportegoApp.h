@@ -19,6 +19,14 @@ public:
 
 	virtual	void				ReadyToRun();
 	virtual	void				AboutRequested();
+	virtual	void				MessageReceived(BMessage* message);
+
+	// Scripting: exposes Connect / Disconnect as executable properties so the
+	// app can be driven with `hey Sotoportego Connect` / `... Disconnect`.
+	virtual	status_t			GetSupportedSuites(BMessage* data);
+	virtual	BHandler*			ResolveSpecifier(BMessage* message,
+									int32 index, BMessage* specifier,
+									int32 what, const char* property);
 
 private:
 			MainWindow*			fWindow;

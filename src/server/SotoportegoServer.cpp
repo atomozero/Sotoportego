@@ -25,6 +25,7 @@
 #include "OpenVPNBackend.h"
 #include "VPNGateFetcher.h"
 #include "WireGuardBackend.h"
+#include "tailscale/TailscaleBackend.h"
 #include "VPNProfile.h"
 #include "VPNProtocol.h"
 #include "VPNStats.h"
@@ -83,6 +84,7 @@ SotoportegoServer::SotoportegoServer()
 	fBackend(NULL),
 	fOpenVPN(NULL),
 	fWireGuard(NULL),
+	fTailscale(NULL),
 	fProfiles(),
 	fLastState(VPN_STATE_DISCONNECTED),
 	fLastServerSummary(),
@@ -132,6 +134,10 @@ SotoportegoServer::ReadyToRun()
 	AddHandler(fWireGuard);
 	fWireGuard->SetObserver(BMessenger(this));
 
+	fTailscale = new TailscaleBackend();
+	AddHandler(fTailscale);
+	fTailscale->SetObserver(BMessenger(this));
+
 	// Default active backend until a profile selects one, so GetStatus before
 	// any connect returns a sane Disconnected snapshot.
 	fBackend = fOpenVPN;
@@ -142,6 +148,7 @@ SotoportegoServer::ReadyToRun()
 	// so they're online again before they have to look up what we did.
 	fOpenVPN->RecoverIfCrashed();
 	fWireGuard->RecoverIfCrashed();
+	fTailscale->RecoverIfCrashed();
 
 	// Kick off the first "where are we without a VPN?" lookup. The answer
 	// lands later as kMsgHomeGeoResult and is folded into every subsequent
@@ -184,6 +191,20 @@ SotoportegoServer::MessageReceived(BMessage* message)
 		case kMsgConnectVPNGate:
 			_HandleConnectVPNGate(message);
 			break;
+		case kMsgSetExitNode:
+		{
+			// Route all traffic through the named Tailscale exit node (empty
+			// clears it). Only the Tailscale backend honours this; others report
+			// B_NOT_SUPPORTED.
+			const char* key = NULL;
+			if (message->FindString(kFieldExitNodeKey, &key) != B_OK)
+				key = "";
+			if (fBackend->SetExitNode(BString(key)) == B_NOT_SUPPORTED) {
+				fprintf(stderr, "[server] exit node not supported by the active "
+					"backend (%s)\n", fBackend->BackendName());
+			}
+			break;
+		}
 
 		// --- Internal: VPNGate catalogue arrived from the fetcher --------
 		case kMsgVPNGateFetched:
@@ -230,8 +251,17 @@ SotoportegoServer::MessageReceived(BMessage* message)
 void
 SotoportegoServer::_SelectBackend(VPNBackendType backendType)
 {
-	fBackend = (backendType == VPN_BACKEND_WIREGUARD && fWireGuard != NULL)
-		? fWireGuard : fOpenVPN;
+	switch (backendType) {
+		case VPN_BACKEND_WIREGUARD:
+			fBackend = fWireGuard != NULL ? fWireGuard : fOpenVPN;
+			break;
+		case VPN_BACKEND_TAILSCALE:
+			fBackend = fTailscale != NULL ? fTailscale : fOpenVPN;
+			break;
+		default:
+			fBackend = fOpenVPN;
+			break;
+	}
 }
 
 
@@ -270,6 +300,12 @@ SotoportegoServer::_HandleConnect(BMessage* message)
 	// say, "/etc/shadow" -- openvpn would echo parse errors that quote the
 	// file contents into our log. So: absolute path, no .. segments, file
 	// must exist and be readable as us.
+	//
+	// Only OpenVPN and WireGuard consume a config file; Tailscale has none
+	// (it's a name + control server), so skip the path gate for it -- an
+	// empty path there is expected, not an attack.
+	bool needsConfigFile = profile.fBackendType == VPN_BACKEND_OPENVPN
+		|| profile.fBackendType == VPN_BACKEND_WIREGUARD;
 	const BString& configPath = profile.fConfigPath;
 	// Reject genuine parent-directory traversal -- a "/../" segment or a
 	// trailing "/.." -- but not an innocent filename that merely contains
@@ -282,7 +318,7 @@ SotoportegoServer::_HandleConnect(BMessage* message)
 		&& !traversal;
 	if (pathOk && access(configPath.String(), R_OK) != 0)
 		pathOk = false;
-	if (!pathOk) {
+	if (needsConfigFile && !pathOk) {
 		printf("[server] connect rejected: bad config path '%s'\n",
 			configPath.String());
 		// A VPNGate connect optimistically recorded the host before getting
@@ -310,6 +346,14 @@ SotoportegoServer::_HandleConnect(BMessage* message)
 		password = "";
 	if (username[0] != '\0' || password[0] != '\0')
 		fBackend->SetCredentials(BString(username), BString(password));
+
+	// A Tailscale pre-auth key rides in the same transient way: fold it into
+	// the profile (which is never persisted) so the backend can register non-
+	// interactively. Absent field means browser SSO, exactly as before.
+	const char* authKey = NULL;
+	if (message->FindString(kFieldAuthKey, &authKey) == B_OK && authKey != NULL
+			&& authKey[0] != '\0')
+		profile.fAuthKey = authKey;
 
 	// A connect implies the sender wants updates.
 	_HandleSubscribe(message);
@@ -437,9 +481,17 @@ SotoportegoServer::_FillStatus(BMessage* message)
 		return;
 	}
 
-	message->AddInt32(kFieldState, (int32)fBackend->State());
+	VPNState state = fBackend->State();
+	message->AddInt32(kFieldState, (int32)state);
 	message->AddString(kFieldBackend, fBackend->BackendName());
 	fBackend->Stats().Archive(message);
+
+	// While a session is live, tell clients which profile is actually
+	// connected (fReconnectProfile is the archived profile of the current
+	// connect), so they can show its details rather than the selected one.
+	bool live = state != VPN_STATE_DISCONNECTED && state != VPN_STATE_ERROR;
+	if (live && !fReconnectProfile.IsEmpty())
+		message->AddMessage(kFieldConnectedProfile, &fReconnectProfile);
 
 	BString localIP = fBackend->LocalIP();
 	if (localIP.Length() > 0)
@@ -447,6 +499,9 @@ SotoportegoServer::_FillStatus(BMessage* message)
 	BString remoteIP = fBackend->RemoteIP();
 	if (remoteIP.Length() > 0)
 		message->AddString(kFieldRemoteIP, remoteIP);
+
+	// Peer list (Tailscale); a no-op for backends without peers.
+	fBackend->FillPeers(*message);
 
 	// Home geo (constant across status updates; cheap to fold in so a fresh
 	// subscriber doesn't have to wait for the next disconnect to learn it).
@@ -487,6 +542,15 @@ SotoportegoServer::_EnrichForBroadcast(BMessage* message)
 	}
 	if (!message->HasString(kFieldConnectedHost) && fConnectedHost.Length() > 0)
 		message->AddString(kFieldConnectedHost, fConnectedHost);
+
+	// The backend's own status broadcasts (state changes, stats ticks) don't
+	// carry the peer list -- only the one-shot _FillStatus replies do. Fold it
+	// in here so every broadcast a client sees is consistent; otherwise the
+	// peers window would be cleared each time a peerless state update arrives
+	// (e.g. the CONNECTED "1 peer" notification). Guard against double-adding
+	// on a message that already went through _FillStatus.
+	if (fBackend != NULL && !message->HasMessage(kFieldPeer))
+		fBackend->FillPeers(*message);
 }
 
 

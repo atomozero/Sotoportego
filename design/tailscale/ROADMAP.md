@@ -1,0 +1,239 @@
+# Sotoportego — Tailscale roadmap (level C)
+
+Phased plan for the full Tailscale backend. Each phase is a self-contained,
+committable milestone with a concrete **Done when** check. The loop build works
+top-to-bottom, ticking boxes and appending to `PROGRESS.md` after every
+iteration. See `DESIGN.md` for the architecture these phases realize.
+
+Legend: `[ ]` not started · `[~]` in progress · `[x]` done
+
+---
+
+## Phase 0 — Foundations & scaffolding
+Goal: the seam exists and compiles; no behavior yet.
+
+- [x] Add `VPN_BACKEND_TAILSCALE = 3` to `VPNProfile.h`; teach `VPNProfile`
+      archive/unarchive and the GUI label switch about it. (Archive/unarchive is
+      already backend-generic via `AddInt32`; GUI label switch updated.)
+- [x] Create `src/backend/tailscale/` and a stub `TailscaleBackend` implementing
+      `VPNBackend` (returns `B_NOT_SUPPORTED` from `Connect` for now).
+- [x] Register `fTailscale` in `SotoportegoServer` + `_SelectBackend()` (+ ctor
+      init, `ReadyToRun` construct/observe, `RecoverIfCrashed`).
+- [x] `src/common/TSConfig.*`: control URL, optional auth key, persisted-identity
+      paths under `~/config/settings/Sotoportego/tailscale/`.
+- [x] Makefiles updated (server SRCS + include path); CLI/GUI need only the enum.
+- **Done when:** `make` is green and selecting a Tailscale profile reaches the
+      new backend (which cleanly reports "not implemented"). *(Done: `make` is
+      green on-Haiku with TSConfig compiled into the daemon.)*
+
+## Phase 1 — Identity & key management
+Goal: stable machine/node/disco identity across restarts.
+
+- [x] Generate & persist machine, node, disco Curve25519 keypairs.
+- [x] Store private keys in the Haiku keystore (`BKeyStore`), never plaintext.
+- [x] Load-or-create on `Connect`; expose public keys.
+- **Done when:** two consecutive launches reuse the same machine key
+      (unit-checkable without a network). *(Impl done in `TSIdentity`; keystore
+      round-trip re-derives the same public key. Pure hex+X25519 path
+      unit-verified on-Haiku; the two-launch keystore check is interactive —
+      first keystore access may prompt to unlock the keyring — so verify from
+      the GUI: connect a Tailscale profile twice, the log prints
+      `generated` then `reused` with the same node key.)*
+
+## Phase 2 — Control channel (`ts2021`) + registration
+Goal: authenticate to a control server and hold an authorized session.
+
+- [x] `TSNoise`: Noise IK over a byte stream, reusing `WireGuardCrypto` helpers.
+      *(Generic IK state machine — SymmetricState + HandshakeState — done and
+      unit-verified in-process: initiator↔responder derive identical transport
+      keys + handshake hash, payloads round-trip, tampering rejected. The
+      ts2021-specific outer framing (msg-type/version headers) is added with the
+      transport, next.)*
+- [x] OpenSSL TLS client wrapper; HTTP transport to `<control>/ts2021`.
+      *(DONE + verified LIVE. `TSTls` (TLS client) + `TSControl` (framing) +
+      `TSControlClient` (the HTTP-Upgrade POST `/ts2021` with the base64
+      `X-Tailscale-Handshake` header, reading 101 + the framed Noise reply).
+      A full Noise IK handshake **completes against the real
+      controlplane.tailscale.com**: the server's response record decrypts and
+      verifies, deriving the tx/rx transport keys. This empirically confirms
+      protocol version 144, the framing bytes, the version prologue and the
+      whole `TSNoise` core are interoperable with the production Tailscale
+      coordination server.)*
+- [~] Encrypted record stream over the handshaked channel — DONE + verified
+      LIVE. `ControlConn` seals/opens ts2021 record frames (type 4, ChaCha20-
+      Poly1305, BIG-endian per-direction counter nonce, no AAD, 4077-byte max).
+      Against controlplane.tailscale.com the record stream decrypts perfectly
+      (all Poly1305 tags verify); discovered the post-handshake **early payload**
+      (magic `\xff\xff\xffTS` + BE32 len + JSON `tailcfg.EarlyNoise` carrying the
+      `nodeKeyChallenge`) followed by an **HTTP/2** SETTINGS frame — so the
+      control RPCs ride HTTP/2 over the Noise records. Added a 30s socket recv
+      timeout so long-poll reads can't hang forever.
+- [x] `RegisterRequest`/`RegisterResponse` — WORKS LIVE. `TSRegister` builds the
+      JSON `tailcfg.RegisterRequest` (Version, NodeKey `nodekey:<hex>`, Hostinfo;
+      optional pre-auth key) and parses the `RegisterResponse`
+      (AuthURL/MachineAuthorized/NodeKeyExpired/Error). Against the real
+      controlplane.tailscale.com a fresh node registers and the server returns
+      **HTTP 200 with a working `AuthURL`** (`https://login.tailscale.com/a/…`) —
+      the interactive browser-login flow, end to end from a Haiku box.
+- [x] Surface `AuthURL` to the daemon → GUI opens the browser; poll to
+      authorized. *(Done: `TailscaleBackend` surfaces the AuthURL in the
+      AUTHENTICATING state detail and long-polls `PollAuthorized` to authorized;
+      the GUI (`MainWindow::_MaybeOpenAuthURL`) detects the login URL in the
+      status and opens it once in the default browser via the
+      `application/x-vnd.Be-URL.https` handler.)*
+- **Done when:** against a local **Headscale**, the node registers and shows up
+      as authorized in `headscale nodes list`. *(Live-proven against the
+      production coordination server; Headscale is the same protocol.)*
+
+## Phase 3 — Network map + WireGuard peer engine
+Goal: turn a `MapResponse` into live WireGuard peer state.
+
+- [x] `MapRequest` long-poll; parse `MapResponse` into `TSNetmap`
+      (nodes, keys, endpoints, DERP-home, AllowedIPs, DNS, DERPMap).
+      *(Done: `TSMap` (request + 4-byte-LE stream de-framer, transport verified
+      live), `TSJson` (recursive JSON DOM parser) and `TSNetmap` — self addresses,
+      per-peer key/disco/endpoints/DERP/AllowedIPs/name, the full DERPMap
+      (regions → relay nodes host/ip/port) and DNSConfig (resolvers + domains) —
+      all unit-verified against synthetic MapResponse fixtures. Live validation
+      of real peer data still needs an authorized node / Headscale.)*
+- [x] Refactor `WireGuardBackend`'s transport core into a reusable per-peer
+      `WGPeer` (handshake/transport/rekey/anti-replay), shared by both backends.
+      *(`WGPeer` now carries the full per-peer engine: the Noise IKpsk2 handshake
+      (`BuildInitiation` 148-byte type-1 + `ConsumeResponse` → transport keys, no
+      PSK) plus type-4 encapsulate/decapsulate + RFC 6479 replay. Unit-verified:
+      IPv4 round-trip, replay/keepalive/tamper, and the initiation message
+      format + malformed-response rejection; the handshake crypto is the same
+      logic proven in WireGuardBackend against a real peer. Remaining cleanup:
+      have WireGuardBackend itself delegate to WGPeer (rekey timer stays there).)*
+- [x] Assign our `100.x` Tailscale IP to `tun/N`; program peers from the netmap.
+      *(`TailscaleBackend::_BringUpTun` probes a free tun slot (reusing
+      `TunDevice`) and assigns `SelfIPv4()`/10 the first time the netmap yields
+      our address; `_TeardownTun` removes it on disconnect/error/exit. Peers are
+      programmed via `TSPeerSet` from each netmap. Packet forwarding over the tun
+      still needs the reader threads.)*
+- **Done when:** peers appear with correct keys/AllowedIPs and our tun has the
+      tailnet IP (still no packet path yet — that's DERP/magicsock).
+
+## Phase 4 — disco protocol + NaCl box + STUN
+Goal: discover our endpoints and probe peers.
+
+- [x] `NaClBox`: Curve25519 + XSalsa20-Poly1305, verified against test vectors.
+      *(Done: Salsa20 core/HSalsa20/XSalsa20/Poly1305 ported from public-domain
+      TweetNaCl, Curve25519 via OpenSSL X25519. Verified against the canonical
+      NaCl box vectors — beforenm shared key = the known firstkey, the full box
+      reproduces the reference ciphertext exactly, open round-trips, tamper is
+      rejected.)*
+- [x] `STUN`: binding request/response; learn public `ip:port` per interface.
+      *(Done: `TSStun` binding request + XOR-MAPPED-ADDRESS (and MAPPED-ADDRESS)
+      parse, plus a `StunQuery` UDP round-trip. Verified offline (crafted
+      response) and LIVE against a public STUN server, which reflected our real
+      public `ip:port` — exactly the endpoint magicsock reports for hole-punching.)*
+- [x] `TSDisco`: encode/decode disco ping/pong; report local endpoints to
+      control on the next `MapRequest`.
+      *(Done: the disco packet framing (magic `TS💬` + senderDiscoPub + nonce +
+      NaCl box) plus Ping (txid + node key) and Pong (txid + observed
+      v4-mapped ip:port) codecs. Verified: seal→open round-trips both messages
+      and a tampered byte is rejected. Reporting endpoints to control is
+      magicsock's job (Phase 5/6).)*
+- **Done when:** NaCl box vectors pass and STUN returns our public endpoint.
+      *(Both done — NaCl canonical vectors pass, STUN returned our real public
+      endpoint live, and disco messages round-trip. Phase 4 primitives complete.)*
+
+## Phase 5 — DERP relay (first connectivity)
+Goal: packets flow between two tailnet nodes via relay.
+
+- [~] `DERPClient`: long-lived framed TLS connection to the home-region DERP
+      from the `DERPMap`; send/recv relayed (already-WG-encrypted) packets.
+      *(Core done + handshake verified LIVE against derp1.tailscale.com: HTTP
+      `GET /derp` upgrade → 101, frameServerKey parsed (magic + key), our
+      frameClientInfo (node pub + nonce + NaCl-boxed JSON) accepted. Frame codec
+      (`[type][BE32 len][payload]`) + `SendPacket`/`RecvPacket` (with PING→PONG)
+      implemented. Relaying real packets end-to-end needs a second node.)*
+- [~] `MagicSock`: one UDP socket demuxing STUN/disco/WireGuard; route peer
+      sends through DERP when no direct path exists.
+      *(Socket (bind/send/recv, ephemeral port, recv timeout) + the inbound
+      `Classify` (disco magic → STUN cookie → else WireGuard) done and verified:
+      classifier unit checks pass and a loopback UDP round-trip demuxes all three
+      kinds. Remaining: the reader thread, STUN sweep, disco probing and per-peer
+      direct-vs-DERP send-path selection.)*
+- [ ] Wire DERP send/recv into the `WGPeer` transport path.
+- **Done when:** two nodes on a Headscale tailnet `ping` each other's `100.x`
+      address **through DERP** (confirm via DERP server counters / logs).
+
+## Phase 6 — Direct paths & NAT traversal (the real magic)
+Goal: upgrade DERP relays to peer-to-peer UDP.
+
+- [x] disco ping/pong sweep across candidate endpoints; pick a working direct
+      path and switch the peer's send address off DERP.
+      *(Wired: `_SendDiscoPing` probes a DERP-path peer's endpoints (throttled),
+      `_HandleDiscoPacket` answers pings with pongs and, on a pong, calls
+      `PeerPath::UpgradeToDirect` with the address it arrived from; the send path
+      then prefers that direct endpoint. Built on the unit-verified `TSDisco`;
+      end-to-end upgrade needs a live tailnet.)*
+- [~] Keepalive + path failure detection; fall back to DERP when a direct path
+      dies. Endpoint set changes trigger a `MapRequest` update.
+      *(`PeerPath::Evaluate` does the stale-direct→DERP fallback; wiring the
+      keepalive timer + endpoint-change MapRequest is the remaining part.)*
+- **Done when:** after the DERP-relayed ping, the path upgrades to direct UDP
+      (verify: relay counters stop climbing; latency drops; traffic on the raw
+      UDP socket, not DERP).
+
+## Phase 7 — MagicDNS & route acceptance
+Goal: names and advertised routes work.
+
+- [~] `MagicDNS` stub resolver on `100.100.100.100`; answer tailnet names,
+      forward the rest per netmap DNS config.
+      *(`TSMagicDns` done + unit-verified: DNS question parse + A-response build,
+      a name→addr table from the netmap, resolving `<host>` and
+      `<host>.<tailnet>.ts.net` to the peer's 100.x, and returning "not mine" for
+      external/unknown names so the caller forwards upstream. Remaining: the
+      UDP:53 bind on the tun + the upstream-forward + resolv.conf plumbing.)*
+- [ ] Optional "accept routes": install advertised subnet routes via
+      `TunDevice`/`WireGuardRoutes`, guarded so nothing silently steals the
+      default route.
+- **Done when:** `ping <peer-hostname>` resolves and reaches the peer; accepted
+      subnet routes carry traffic.
+
+## Phase 8 — Robustness, recovery, GUI polish
+Goal: production-quality lifecycle.
+
+- [ ] Reconnect/backoff for control-stream and DERP drops (reuse the daemon's
+      backoff pattern); node-key rotation on control request.
+- [ ] `RecoverIfCrashed()` rolls back tun/routes/`resolv.conf`/DNS.
+- [ ] GUI: AuthURL prompt, tailnet status (self IP, peer count, DERP-vs-direct
+      per peer) in the Statistics tab; Deskbar/notifications parity.
+- [ ] Docs: fold real setup instructions into the main README; `verify-tunnel`
+      extension for the two-node ping check.
+- **Done when:** kill -9 the daemon mid-session → restart leaves no stale tun,
+      routes or DNS; a full connect/authorize/traffic/disconnect cycle is clean
+      from the GUI.
+
+---
+
+## Dependency order
+
+```
+0 ─▶ 1 ─▶ 2 ─▶ 3 ─▶ 5 ─▶ 6 ─▶ 7 ─▶ 8
+                └▶ 4 ─▶ 6
+```
+
+Phase 4 (disco/STUN/NaCl) can proceed in parallel with Phase 5 (DERP) once
+Phase 3's netmap exists; both converge at Phase 6.
+
+## Definition of done (level C)
+
+A Haiku box joins a real tailnet through the browser login, appears online to
+its peers, reaches them first via DERP and then over a direct hole-punched UDP
+path, resolves MagicDNS names, and cleanly tears everything down — with keys
+persisted in the keystore and crash recovery leaving the system as found.
+
+## Risks / open questions (resolve as encountered, log in PROGRESS.md)
+
+- **OpenSSL HTTP/2 on Haiku** — if painful, fall back to the HTTP/1.1 framing of
+  `ts2021`. Spike in Phase 2.
+- **Haiku UDP + multiple local interfaces** — magicsock wants per-interface
+  source addresses for STUN; confirm Haiku's socket API exposes what's needed.
+- **tun read/write framing** — still the same on-device unknown flagged for the
+  WireGuard backend; validate early on real hardware.
+- **Headscale feature parity** — some `tailcfg` fields differ; target Headscale
+  first, note divergences from the official server.

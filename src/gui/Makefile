@@ -22,7 +22,13 @@ SRCS = \
 	SotoportegoApp.cpp \
 	MainWindow.cpp \
 	HeaderView.cpp \
+	AboutWindow.cpp \
+	ClickableStringView.cpp \
 	CredentialsWindow.cpp \
+	TailscaleWindow.cpp \
+	PeersWindow.cpp \
+	TopologyView.cpp \
+	TopologyWindow.cpp \
 	MetricPill.cpp \
 	VaporettoWindow.cpp \
 	DeskbarIcon.cpp \

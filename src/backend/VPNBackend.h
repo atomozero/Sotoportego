@@ -14,6 +14,8 @@
 #include "VPNState.h"
 #include "VPNStats.h"
 
+class BMessage;
+
 
 // Abstract interface every VPN implementation (OpenVPN, WireGuard, IPSec, ...)
 // must satisfy. A backend is owned by the daemon and lives inside the daemon's
@@ -49,11 +51,22 @@ public:
 	virtual	BString				LocalIP() const { return BString(); }
 	virtual	BString				RemoteIP() const { return BString(); }
 
+	// Fold the current peer list into a status message (one nested kFieldPeer
+	// per peer). Only meshy backends (Tailscale) have peers; the default is a
+	// no-op.
+	virtual	void				FillPeers(BMessage& /*out*/) {}
+
 	// Provide transient credentials for the next connection attempt; the
 	// default is a no-op for backends that don't need them. Plaintext and
 	// not persisted.
 	virtual	void				SetCredentials(const BString& /*user*/,
 									const BString& /*pass*/) {}
+
+	// Route all traffic through a peer acting as an exit node, identified by an
+	// opaque backend-specific id (empty string clears it). Only meshy backends
+	// (Tailscale) support this; the default reports it isn't supported.
+	virtual	status_t			SetExitNode(const BString& /*id*/)
+									{ return B_NOT_SUPPORTED; }
 
 	// Called once at daemon startup. Backends that touch routing or other
 	// system state during a session can override this to roll back any

@@ -23,6 +23,13 @@ class BStringView;
 class HeaderView;
 
 
+// Automation hooks: posting these to the main window runs the same connect /
+// disconnect paths as the menu items. Used by the app's `hey` scripting suite
+// so the two commands are drivable from a script or the command line.
+static const uint32 kMsgAutomationConnect		= 'auCo';
+static const uint32 kMsgAutomationDisconnect	= 'auDi';
+
+
 // The main Sotoportego window. Like the CLI, it is purely a client of the
 // daemon: it subscribes over BMessage, reflects the broadcast state/stats, and
 // sends connect/disconnect requests. No VPN logic lives here.
@@ -48,7 +55,14 @@ private:
 			void				_SendDisconnect();
 			void				_UpdateForState(VPNState state,
 									const char* detail);
+		// Open a Tailscale interactive-login AuthURL found in the status detail,
+		// once per distinct URL (fLastAuthURL guards against reopening on every
+		// status tick).
+				void				_MaybeOpenAuthURL(const char* detail);
 			void				_ApplyStats(const BMessage* message);
+		// Cache the Tailscale peer list from a status broadcast and refresh
+		// the peers window if it is open.
+			void				_UpdatePeers(const BMessage* status);
 			void				_AppendEvent(const char* text);
 	// Rebuild the bottom status-bar line. Called from _UpdateForState
 	// and from the 1 Hz uptime tick.
@@ -62,6 +76,11 @@ private:
 			void				_RefreshDetails();
 			void				_OpenImportPanel();
 			void				_ImportFile(const entry_ref& ref);
+		// Create and save a Tailscale profile (VPN_BACKEND_TAILSCALE) from the
+		// name + control-server URL the Tailscale dialog collected.
+			void				_CreateTailscaleProfile(const char* name,
+									const char* controlURL,
+									const char* authKey);
 			void				_DeleteSelectedProfile();
 			const VPNProfile*	_SelectedProfile() const;
 
@@ -94,6 +113,7 @@ private:
 			BStringView*		fProtocolLabel;
 			BStringView*		fTunnelIPValue;
 			BStringView*		fExternalIPValue;
+			BStringView*		fConnNotice;
 			BStringView*		fSinceValue;
 			BStringView*		fDownValue;
 			BStringView*		fUpValue;
@@ -126,6 +146,23 @@ private:
 	// clear so we don't loop on a stale secret.
 			BString					fLastConnectProfile;
 			bool					fLastUsedStoredCredentials;
+
+		// The last Tailscale AuthURL we opened, so the browser isn't relaunched
+		// on every AUTHENTICATING status update carrying the same URL.
+			BString					fLastAuthURL;
+
+		// The peers window (a messenger so we can tell whether it's still
+		// open) plus the latest peer snapshot pushed to it on every status
+		// update.
+			BMessenger				fPeersWindow;
+			BMessenger				fTopologyWindow;
+			BMessage				fLastPeers;
+
+		// The profile the daemon reports as actually connected (broadcast in
+		// the status), so the Server box describes the live session rather than
+		// the list selection. fHasConnectedProfile is false while idle.
+			VPNProfile				fConnectedProfile;
+			bool					fHasConnectedProfile;
 };
 
 

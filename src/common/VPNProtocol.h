@@ -79,7 +79,11 @@ enum {
 	// C -> S : connect to a VPNGate server picked from the map. The .ovpn
 	// body is shipped in-message (base64 under kFieldVPNGateConfigBase64)
 	// so the daemon doesn't have to keep the whole catalogue resident.
-	kMsgConnectVPNGate	= 'sCVG'
+	kMsgConnectVPNGate	= 'sCVG',
+
+	// C -> S : route all traffic through a Tailscale exit node, identified by
+	// its node key hex under kFieldExitNodeKey (empty string clears it).
+	kMsgSetExitNode		= 'sExN'
 };
 
 
@@ -91,6 +95,10 @@ static const char* const kFieldState		= "soto:state";
 static const char* const kFieldDetail		= "soto:detail";
 // Archived VPNProfile (a nested BMessage).
 static const char* const kFieldProfile		= "soto:profile";
+// The profile the daemon is actually connected to, archived and folded into a
+// status broadcast while a session is live. Lets a client show the *connected*
+// profile's details instead of whatever happens to be selected in its list.
+static const char* const kFieldConnectedProfile	= "soto:connectedProfile";
 // BMessenger identifying a client (for subscribe / targeted replies).
 static const char* const kFieldClient		= "soto:client";
 // Name of the active backend ("OpenVPN", ...).
@@ -138,6 +146,10 @@ static const char* const kFieldConnectedHost	= "soto:connected:host";
 // daemon. The GUI strips them from the message after delivery.
 static const char* const kFieldUsername			= "soto:auth:username";
 static const char* const kFieldPassword			= "soto:auth:password";
+// Transient Tailscale pre-auth key, carried the same way: the GUI loads it
+// from the keystore at Connect time and the daemon merges it into the profile
+// before handing off to the backend. Never persisted in the profile store.
+static const char* const kFieldAuthKey			= "soto:auth:authkey";
 
 // VPNProfile fields:
 static const char* const kFieldProfileName		= "soto:profile:name";
@@ -148,6 +160,33 @@ static const char* const kFieldProfileUsername	= "soto:profile:username";
 static const char* const kFieldProfileConfigPath = "soto:profile:configPath";
 // Transport protocol as a string ("udp" or "tcp"). Defaults to "udp".
 static const char* const kFieldProfileProtocol	= "soto:profile:protocol";
+
+// Tailscale peer list, folded into a status broadcast: one nested message per
+// peer under kFieldPeer, each carrying the fields below. Absent for backends
+// that have no peer concept.
+static const char* const kFieldPeer			= "soto:peer";			// BMessage[]
+static const char* const kFieldPeerName		= "soto:peer:name";		// hostname
+static const char* const kFieldPeerIP		= "soto:peer:ip";		// tailnet IPv4
+static const char* const kFieldPeerOnline	= "soto:peer:online";	// bool
+static const char* const kFieldPeerPath		= "soto:peer:path";		// "direct"/"relay"
+static const char* const kFieldPeerNodeKey	= "soto:peer:nodekey";	// node key hex
+static const char* const kFieldPeerExitCap	= "soto:peer:exitcap";	// bool: exit node
+static const char* const kFieldPeerExitOn	= "soto:peer:exiton";	// bool: active exit
+// Live/detail fields for the tailnet map: cumulative app bytes, the direct
+// endpoint (if any), the home DERP region + code, and seconds since the last
+// handshake (-1 if none).
+static const char* const kFieldPeerTx		= "soto:peer:tx";		// int64
+static const char* const kFieldPeerRx		= "soto:peer:rx";		// int64
+static const char* const kFieldPeerEndpoint	= "soto:peer:endpoint";	// "ip:port"
+static const char* const kFieldPeerDerp		= "soto:peer:derp";		// int32 region
+static const char* const kFieldPeerDerpCode	= "soto:peer:derpcode";	// e.g. "nyc"
+static const char* const kFieldPeerHsAge	= "soto:peer:hsage";	// int32 secs
+
+// C -> S command payload: the node key hex of the exit node to use ("" clears).
+static const char* const kFieldExitNodeKey	= "soto:exitNodeKey";
+// Optional Tailscale pre-auth key: when set, the node registers non-
+// interactively instead of opening a browser for SSO login.
+static const char* const kFieldProfileAuthKey	= "soto:profile:authKey";
 
 // VPNGate catalogue fields. A kMsgVPNGateList message carries one nested
 // BMessage per server under kFieldVPNGateServer; each nested message in
