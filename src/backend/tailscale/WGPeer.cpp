@@ -6,6 +6,8 @@
 
 #include <string.h>
 
+#include <OS.h>			// system_time
+
 #include "WireGuardCrypto.h"
 
 
@@ -17,6 +19,15 @@ static const uint64 kReplayBlocks	= 128;		// 8192-bit window
 static const uint64 kReplayWindow	= kReplayBits * (kReplayBlocks - 1);
 static const uint64 kRejectAfterMessages = 0xFFFFFFFFFFFFFFFFULL
 	- (1ULL << 13) - 1;
+
+// WireGuard session-lifetime timers (the protocol constants, in microseconds).
+// A session should be rekeyed after REKEY_AFTER_TIME and must not be used past
+// REJECT_AFTER_TIME; retransmit a pending initiation no faster than REKEY_TIMEOUT
+// and send a keepalive after KEEPALIVE_TIMEOUT of silence.
+static const bigtime_t kRekeyAfterTime	= 120LL * 1000000;	// REKEY_AFTER_TIME
+static const bigtime_t kRejectAfterTime	= 180LL * 1000000;	// REJECT_AFTER_TIME
+static const bigtime_t kRekeyTimeout	=   5LL * 1000000;	// retransmit gap
+static const bigtime_t kKeepaliveTimeout =  25LL * 1000000;	// persistent keepalive
 
 
 static void
@@ -94,7 +105,12 @@ WGPeer::WGPeer()
 	fReceiverIndex(0),
 	fSendCounter(0),
 	fReplayCounter(0),
-	fSenderIndex(0)
+	fSenderIndex(0),
+	fPendingReceiverIndex(0),
+	fEstablished(0),
+	fLastInitiation(0),
+	fLastSend(0),
+	fTestClock(0)
 {
 	memset(fNodeKey, 0, sizeof(fNodeKey));
 	memset(fSendKey, 0, sizeof(fSendKey));
@@ -104,6 +120,7 @@ WGPeer::WGPeer()
 	memset(fPeerStatic, 0, sizeof(fPeerStatic));
 	memset(fEphemeralPriv, 0, sizeof(fEphemeralPriv));
 	memset(fEphemeralPub, 0, sizeof(fEphemeralPub));
+	memset(fPeerEphemeral, 0, sizeof(fPeerEphemeral));
 	memset(fChainingKey, 0, sizeof(fChainingKey));
 	memset(fHash, 0, sizeof(fHash));
 }
@@ -125,6 +142,10 @@ WGPeer::SetTransport(const uint8 sendKey[32], const uint8 recvKey[32],
 	fReceiverIndex = receiverIndex;
 	fSendCounter = 0;
 	fHasKeys = true;
+	// Start the session-lifetime clock now; treat installation as "just sent" so
+	// the first keepalive is a full window away.
+	fEstablished = _Now();
+	fLastSend = fEstablished;
 	ResetReplay();
 }
 
@@ -153,6 +174,7 @@ WGPeer::Encapsulate(const uint8* plain, size_t plainLen, uint8* out)
 			out + 16))
 		return 0;
 	fSendCounter++;
+	fLastSend = _Now();
 	return 16 + padded + 16;
 }
 
@@ -260,6 +282,7 @@ WGPeer::BuildInitiation(const uint8 ourPriv[32], const uint8 peerPub[32],
 		wg::HashFinal(s, mac1Key);
 	}
 	wg::Mac16(mac1Key, out, 116, out + 116);
+	fLastInitiation = _Now();
 	return 148;
 }
 
@@ -305,6 +328,203 @@ WGPeer::ConsumeResponse(const uint8* resp, size_t len)
 	wg::Kdf2(fChainingKey, NULL, 0, sendKey, recvKey);
 	SetTransport(sendKey, recvKey, receiverIndex);
 	return true;
+}
+
+
+bool
+WGPeer::_ResponderConsume(const uint8 ourPriv[32], const uint8* msg, size_t len,
+	uint8 outCk[32], uint8 outHash[32], uint8 outPeerEph[32], uint8 outStatic[32],
+	uint32* outRecvIndex)
+{
+	if (msg == NULL || len != 148 || msg[0] != 1)
+		return false;
+
+	const uint8* peerEphemeral = msg + 8;	// 32
+	const uint8* encStatic = msg + 40;		// 48
+	const uint8* encTs = msg + 88;			// 28
+
+	uint8 ourPub[32];
+	if (!wg::DhPublic(ourPriv, ourPub))
+		return false;
+
+	// C = Hash(CONSTRUCTION); H = Hash(Hash(C || IDENTIFIER) || Spub_r), with
+	// Spub_r our own node static -- mirroring the initiator's opening mix.
+	uint8 ck[32];
+	uint8 h[32];
+	wg::Hash(kConstruction, sizeof(kConstruction) - 1, ck);
+	{
+		wg::Blake2s s;
+		wg::HashInit(s);
+		wg::HashUpdate(s, ck, 32);
+		wg::HashUpdate(s, kIdentifier, sizeof(kIdentifier) - 1);
+		wg::HashFinal(s, h);
+	}
+	mix_hash(h, ourPub, 32);
+
+	// -> e
+	wg::Kdf1(ck, peerEphemeral, 32, ck);
+	mix_hash(h, peerEphemeral, 32);
+
+	uint8 dh[32];
+	uint8 key[32];
+
+	// es: decrypt the initiator static with DH(Spriv_r, Epub_i).
+	if (!wg::Dh(ourPriv, peerEphemeral, dh))
+		return false;
+	wg::Kdf2(ck, dh, 32, ck, key);
+	if (!wg::AeadDecrypt(key, 0, encStatic, 48, h, 32, outStatic))
+		return false;
+	mix_hash(h, encStatic, 48);
+
+	// ss: verify the timestamp with DH(Spriv_r, Spub_i).
+	if (!wg::Dh(ourPriv, outStatic, dh))
+		return false;
+	wg::Kdf2(ck, dh, 32, ck, key);
+	uint8 timestamp[12];
+	if (!wg::AeadDecrypt(key, 0, encTs, 28, h, 32, timestamp))
+		return false;
+	mix_hash(h, encTs, 28);
+
+	memcpy(outCk, ck, 32);
+	memcpy(outHash, h, 32);
+	memcpy(outPeerEph, peerEphemeral, 32);
+	if (outRecvIndex != NULL)
+		*outRecvIndex = load32_le(msg + 4);
+	return true;
+}
+
+
+bool
+WGPeer::RecoverInitiatorStatic(const uint8 ourPriv[32], const uint8* msg,
+	size_t len, uint8 outStatic[32])
+{
+	uint8 ck[32], h[32], peerEph[32];
+	return _ResponderConsume(ourPriv, msg, len, ck, h, peerEph, outStatic, NULL);
+}
+
+
+bool
+WGPeer::ConsumeInitiation(const uint8 ourPriv[32], const uint8* msg, size_t len)
+{
+	uint8 peerStatic[32];
+	if (!_ResponderConsume(ourPriv, msg, len, fChainingKey, fHash,
+			fPeerEphemeral, peerStatic, &fPendingReceiverIndex))
+		return false;
+	memcpy(fOurPriv, ourPriv, 32);
+	memcpy(fPeerStatic, peerStatic, 32);
+	return true;
+}
+
+
+ssize_t
+WGPeer::BuildResponse(uint8 out[92])
+{
+	// -> e' : our responder ephemeral.
+	if (!wg::DhGenerate(fEphemeralPriv, fEphemeralPub))
+		return -1;
+	wg::Kdf1(fChainingKey, fEphemeralPub, 32, fChainingKey);
+	mix_hash(fHash, fEphemeralPub, 32);
+
+	uint8 dh[32];
+	// ee : DH(Epriv_r, Epub_i)
+	if (!wg::Dh(fEphemeralPriv, fPeerEphemeral, dh))
+		return -1;
+	wg::Kdf1(fChainingKey, dh, 32, fChainingKey);
+	// se : DH(Epriv_r, Spub_i)
+	if (!wg::Dh(fEphemeralPriv, fPeerStatic, dh))
+		return -1;
+	wg::Kdf1(fChainingKey, dh, 32, fChainingKey);
+
+	// psk (all-zero for Tailscale) -> mixes tau into the hash + derives the key
+	// that seals the empty payload.
+	uint8 psk[32];
+	memset(psk, 0, 32);
+	uint8 tau[32];
+	uint8 key[32];
+	wg::Kdf3(fChainingKey, psk, 32, fChainingKey, tau, key);
+	mix_hash(fHash, tau, 32);
+
+	uint8 dummy[1];
+	uint8 encNothing[16];
+	if (!wg::AeadEncrypt(key, 0, dummy, 0, fHash, 32, encNothing))
+		return -1;
+	mix_hash(fHash, encNothing, 16);
+
+	// Assemble the 92-byte type-2 message. Our sender index is fresh; the
+	// receiver index echoes the initiator's.
+	uint32 senderIndex = 0;
+	if (!wg::RandomBytes(&senderIndex, sizeof(senderIndex)))
+		return -1;
+	memset(out, 0, 92);
+	out[0] = 2;
+	store32_le(out + 4, senderIndex);
+	store32_le(out + 8, fPendingReceiverIndex);
+	memcpy(out + 12, fEphemeralPub, 32);
+	memcpy(out + 44, encNothing, 16);
+	// mac1 = MAC(Hash(LABEL_MAC1 || Spub_i), msg[0:60]); mac2 stays zero. The
+	// key is the *initiator's* static, since that's what the peer checks against.
+	uint8 mac1Key[32];
+	{
+		wg::Blake2s s;
+		wg::HashInit(s);
+		wg::HashUpdate(s, kLabelMac1, sizeof(kLabelMac1));
+		wg::HashUpdate(s, fPeerStatic, 32);
+		wg::HashFinal(s, mac1Key);
+	}
+	wg::Mac16(mac1Key, out, 60, out + 60);
+
+	// Transport keys: as the responder, the derivation order is swapped from the
+	// initiator (recv, send = KDF2(C, empty)).
+	uint8 recvKey[32];
+	uint8 sendKey[32];
+	wg::Kdf2(fChainingKey, NULL, 0, recvKey, sendKey);
+	SetTransport(sendKey, recvKey, fPendingReceiverIndex);
+	// SetTransport doesn't know our local index; record it so inbound transport
+	// packets (whose receiver index is this value) demux back to this peer.
+	fSenderIndex = senderIndex;
+	return 92;
+}
+
+
+bool
+WGPeer::ShouldInitiateRekey(bigtime_t now) const
+{
+	return fHasKeys && (now - fEstablished) >= kRekeyAfterTime
+		&& (now - fLastInitiation) >= kRekeyTimeout;
+}
+
+
+bool
+WGPeer::ShouldKeepalive(bigtime_t now) const
+{
+	return fHasKeys && (now - fLastSend) >= kKeepaliveTimeout;
+}
+
+
+bool
+WGPeer::ExpireIfStale(bigtime_t now)
+{
+	if (fHasKeys && (now - fEstablished) > kRejectAfterTime) {
+		fHasKeys = false;
+		return true;
+	}
+	return false;
+}
+
+
+int
+WGPeer::SessionAgeSeconds(bigtime_t now) const
+{
+	if (!fHasKeys)
+		return -1;
+	return (int)((now - fEstablished) / 1000000);
+}
+
+
+bigtime_t
+WGPeer::_Now() const
+{
+	return fTestClock != 0 ? fTestClock : system_time();
 }
 
 

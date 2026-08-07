@@ -20,6 +20,7 @@
 #include "VPNProfile.h"
 #include "VPNProtocol.h"		// kFieldPeer* status fields
 
+#include "TSBackoff.h"
 #include "TSControl.h"			// kControlProtocolVersion
 #include "TSControlSession.h"
 #include "TSDisco.h"
@@ -59,8 +60,11 @@ TailscaleBackend::TailscaleBackend()
 	fDnsFd(-1),
 	fDnsThread(-1),
 	fSessionLock("ts session"),
+	fDerpLock("ts derp"),
 	fDerpUp(false),
-	fDerpHomeRegion(-1)
+	fDerpHomeRegion(-1),
+	fDerpHost(""),
+	fLastDerpKeepalive(0)
 {
 }
 
@@ -359,10 +363,16 @@ TailscaleBackend::_SendPeerBytes(ts::ManagedPeer* peer, const uint8* buf,
 	size_t len)
 {
 	struct sockaddr_in to;
-	if (peer_sockaddr(peer, to))
+	if (peer_sockaddr(peer, to)) {
 		fMagicSock.SendTo((struct sockaddr*)&to, sizeof(to), buf, len);
-	else if (fDerpUp)
-		fDerp.SendPacket(peer->wg.NodeKey(), buf, len);
+	} else if (fDerpUp) {
+		// Take fDerpLock so the reader can't Close+reconnect the relay out from
+		// under this send; re-check fDerpUp inside in case it just went down.
+		fDerpLock.Lock();
+		if (fDerpUp)
+			fDerp.SendPacket(peer->wg.NodeKey(), buf, len);
+		fDerpLock.Unlock();
+	}
 }
 
 
@@ -377,11 +387,16 @@ TailscaleBackend::_SendToPeer(ts::ManagedPeer* peer, const uint8* packet,
 	if (peer->path.Mode() != ts::PATH_DIRECT)
 		_SendDiscoPing(peer);
 
+	bigtime_t now = system_time();
+	// A session that aged past REJECT_AFTER_TIME (no rekey response ever came
+	// back) is unusable -- drop the keys so the block below starts a fresh
+	// handshake rather than encrypting with a key the peer now rejects.
+	peer->wg.ExpireIfStale(now);
+
 	if (!peer->wg.HasKeys()) {
 		// Lazily start a WireGuard handshake, throttled so a burst of packets
 		// doesn't flood initiations. The initiation goes via DERP (or a
 		// confirmed direct path); the response arrives on a reader thread.
-		bigtime_t now = system_time();
 		if (now - peer->lastHandshake > 5000000) {
 			uint8 init[148];
 			if (peer->wg.BuildInitiation(fIdentity.NodePrivate(),
@@ -393,10 +408,57 @@ TailscaleBackend::_SendToPeer(ts::ManagedPeer* peer, const uint8* packet,
 		return;	// drop this data packet until the session is up
 	}
 
+	// Live session: if it has aged past REKEY_AFTER_TIME, initiate a fresh
+	// handshake now while still using the current keys (make-before-break) -- the
+	// new keys install atomically when the response arrives.
+	if (peer->wg.ShouldInitiateRekey(now)) {
+		uint8 init[148];
+		if (peer->wg.BuildInitiation(fIdentity.NodePrivate(),
+				peer->wg.NodeKey(), init) == 148) {
+			peer->lastHandshake = now;
+			_SendPeerBytes(peer, init, 148);
+		}
+	}
+
 	uint8 out[2048];
 	size_t n = peer->wg.Encapsulate(packet, len, out);
 	if (n > 0)
 		_SendPeerBytes(peer, out, n);
+}
+
+
+// Periodic upkeep across all peers, driven off the tun reader's ~1s tick so it
+// runs even when the tun is idle (an inbound-only session must still be rekeyed
+// and kept warm). Caller must NOT hold fSessionLock; we take it here.
+void
+TailscaleBackend::_MaintainPeers()
+{
+	bigtime_t now = system_time();
+	fSessionLock.Lock();
+	size_t count = fSession.Peers().Count();
+	for (size_t i = 0; i < count; i++) {
+		ts::ManagedPeer* p = fSession.Peers().PeerAt(i);
+		if (p == NULL || !p->wg.HasKeys())
+			continue;
+		if (p->wg.ExpireIfStale(now))
+			continue;	// keys dropped; next outbound packet re-handshakes
+		if (p->wg.ShouldInitiateRekey(now)) {
+			uint8 init[148];
+			if (p->wg.BuildInitiation(fIdentity.NodePrivate(),
+					p->wg.NodeKey(), init) == 148) {
+				p->lastHandshake = now;
+				printf("[tailscale] rekeying WireGuard session with %s (age %ds)\n",
+					p->hostname.String(), p->wg.SessionAgeSeconds(now));
+				_SendPeerBytes(p, init, 148);
+			}
+		} else if (p->wg.ShouldKeepalive(now)) {
+			uint8 out[64];
+			size_t n = p->wg.Encapsulate(NULL, 0, out);	// empty keepalive
+			if (n > 0)
+				_SendPeerBytes(p, out, n);
+		}
+	}
+	fSessionLock.Unlock();
 }
 
 
@@ -495,7 +557,31 @@ TailscaleBackend::_HandleWireGuardPacket(const uint8* buf, size_t len)
 {
 	if (len < 4)
 		return;
-	if (buf[0] == 2 && len == 92) {
+	if (buf[0] == 1 && len == 148) {
+		// Handshake initiation FROM a peer: the peer is (re)keying towards us, so
+		// we take the responder role. Recover which peer it is (the encrypted
+		// static decrypts to their node key), complete the responder handshake and
+		// send the type-2 response back on the same path. Without this a peer that
+		// rekeys first -- WireGuard rekeys every ~2 min -- would tear the session
+		// down when we ignored its initiation.
+		uint8 peerStatic[32];
+		if (!ts::WGPeer::RecoverInitiatorStatic(fIdentity.NodePrivate(), buf, len,
+				peerStatic))
+			return;
+		BString hex = ts::TSIdentity::ToHex(peerStatic, 32);
+		fSessionLock.Lock();
+		ts::ManagedPeer* p = fSession.Peers().Find(hex.String());
+		if (p != NULL
+				&& p->wg.ConsumeInitiation(fIdentity.NodePrivate(), buf, len)) {
+			uint8 resp[92];
+			if (p->wg.BuildResponse(resp) == 92) {
+				_SendPeerBytes(p, resp, 92);
+				printf("[tailscale] answered WireGuard rekey from %s\n",
+					p->hostname.String());
+			}
+		}
+		fSessionLock.Unlock();
+	} else if (buf[0] == 2 && len == 92) {
 		// Handshake response: receiver index (bytes 8..11) is our sender idx.
 		uint32 idx = le32(buf + 8);
 		fSessionLock.Lock();
@@ -685,8 +771,11 @@ TailscaleBackend::_BringUpDerp()
 			host.String(), fDerp.LastError());
 		return;
 	}
+	fDerpLock.Lock();
 	fDerpUp = true;
+	fDerpLock.Unlock();
 	fDerpHomeRegion = chosen;
+	fDerpHost = host;					// remembered so the reader can reconnect
 	fDerp.SetStopFlag(&fStopRequested);	// let the reader break out on stop
 	printf("[tailscale] DERP relay connected (%s)\n", host.String());
 	fDerpReader = spawn_thread(_DerpReaderEntry, "tailscale-derp",
@@ -745,17 +834,90 @@ TailscaleBackend::_RunDerpReader()
 {
 	uint8 src[32];
 	uint8 buf[2048];
+	ts::ReconnectBackoff backoff(1000000LL /* 1s */, 30000000LL /* 30s */,
+		30000000LL /* healthy >= 30s */);
+	bigtime_t connectedAt = system_time();
 	while (!fStopRequested) {
 		ssize_t n = fDerp.RecvPacket(src, buf, sizeof(buf));
-		if (n < 0)
-			break;		// relay connection dropped
+		if (n > 0) {
+			// A relayed packet is a raw WireGuard message; demux it like a direct
+			// datagram (the receiver index identifies the session).
+			_HandleWireGuardPacket(buf, (size_t)n);
+			continue;
+		}
 		if (n == 0)
 			continue;	// a control frame (keepalive/peer-gone/...)
-		// A relayed packet is a raw WireGuard message; demux it like a direct
-		// datagram (the receiver index identifies the session).
-		_HandleWireGuardPacket(buf, (size_t)n);
+
+		// n < 0: the relay dropped (or a stop was requested). DERP is often the
+		// only path to a peer, so a drop must not silently kill connectivity --
+		// keep the rest of the data plane up and reconnect to the same home
+		// region with backoff.
+		if (fStopRequested)
+			break;
+		bigtime_t lasted = system_time() - connectedAt;
+		printf("[tailscale] DERP relay dropped (up %llds) -- reconnecting\n",
+			(long long)(lasted / 1000000));
+		_DerpMarkDown();
+		bigtime_t delay = backoff.NextDelay(true /* was connected */, lasted);
+		if (!_SleepInterruptible(delay))
+			break;
+		if (_DerpReconnect())
+			connectedAt = system_time();
 	}
 	return 0;
+}
+
+
+// Take the relay down after a drop: flip the flag so senders stop using it, then
+// free the TLS session. Guarded by fDerpLock against a concurrent send.
+void
+TailscaleBackend::_DerpMarkDown()
+{
+	fDerpLock.Lock();
+	fDerpUp = false;
+	fDerp.Close();
+	fDerpLock.Unlock();
+}
+
+
+// Reconnect to the remembered home-region DERP server. Guarded by fDerpLock so a
+// sender never touches a half-open session. Returns true once the relay is back.
+bool
+TailscaleBackend::_DerpReconnect()
+{
+	if (fDerpHost.Length() == 0)
+		return false;
+	fDerpLock.Lock();
+	status_t r = fDerp.Connect(fDerpHost.String(), 443, false,
+		fIdentity.NodePrivate(), fIdentity.NodePublic());
+	bool ok = (r == B_OK);
+	if (ok) {
+		fDerp.SetStopFlag(&fStopRequested);
+		fDerpUp = true;
+	}
+	fDerpLock.Unlock();
+	if (ok)
+		printf("[tailscale] DERP relay reconnected (%s)\n", fDerpHost.String());
+	else
+		fprintf(stderr, "[tailscale] DERP reconnect to %s failed: %s\n",
+			fDerpHost.String(), fDerp.LastError());
+	return ok;
+}
+
+
+// Send a DERP client keepalive if the relay has been idle for a while, so a
+// stateful firewall doesn't reap the flow when no packets are being relayed.
+// Called from the tun reader's tick (NOT under fSessionLock).
+void
+TailscaleBackend::_DerpKeepaliveTick(bigtime_t now)
+{
+	if (now - fLastDerpKeepalive < 60000000)	// 60s
+		return;
+	fLastDerpKeepalive = now;
+	fDerpLock.Lock();
+	if (fDerpUp)
+		fDerp.WriteFrame(ts::DERP_KEEP_ALIVE, NULL, 0);
+	fDerpLock.Unlock();
 }
 
 
@@ -807,10 +969,16 @@ TailscaleBackend::_StopDataPlane()
 		wait_for_thread(fDerpReader, &ignored);
 		fDerpReader = -1;
 	}
+	// The reader has exited (no concurrency now), but take fDerpLock anyway for
+	// consistency with the reconnect path. If the reader tore the session down
+	// during a reconnect, fDerpUp is already false and Close() is a no-op.
+	fDerpLock.Lock();
 	if (fDerpUp) {
 		fDerp.Close();
 		fDerpUp = false;
 	}
+	fDerpLock.Unlock();
+	fDerpHost = "";
 	if (fTunFd >= 0) {
 		close(fTunFd);
 		fTunFd = -1;
@@ -836,6 +1004,7 @@ int32
 TailscaleBackend::_RunTunReader()
 {
 	uint8 buf[2048];
+	bigtime_t lastMaint = 0;
 	while (!fStopRequested) {
 		fd_set rd;
 		FD_ZERO(&rd);
@@ -844,6 +1013,17 @@ TailscaleBackend::_RunTunReader()
 		tv.tv_sec = 0;
 		tv.tv_usec = 200000;	// 200ms so we notice a stop request
 		int r = select(fTunFd + 1, &rd, NULL, NULL, &tv);
+
+		// Run per-peer rekey/keepalive upkeep about once a second, on this same
+		// thread, whether or not the tun had a packet -- an idle or inbound-only
+		// session must still be rekeyed before REJECT_AFTER_TIME kills it.
+		bigtime_t now = system_time();
+		if (now - lastMaint >= 1000000) {
+			_MaintainPeers();
+			_DerpKeepaliveTick(now);
+			lastMaint = now;
+		}
+
 		if (r <= 0)
 			continue;
 
@@ -911,7 +1091,82 @@ TailscaleBackend::_BringUpTun(const char* selfIPv4)
 	}
 	fTunInterface = iface;
 	fTunNode = node;
+	fTunSelfIP = selfIPv4;	// on-link next hop for subnet routes
 	printf("[tailscale] tun %s up with %s/10\n", iface.String(), selfIPv4);
+}
+
+
+// Reconcile the system routes for peer subnet routers against the current
+// netmap: add a route onto the tun for every non-tailnet CIDR a peer advertises,
+// and remove routes for CIDRs that are no longer advertised. Runs on the worker
+// after each netmap; the peer-set demux then forwards the packets the kernel
+// delivers to the tun. The default route (exit node) is not auto-installed.
+void
+TailscaleBackend::_SyncRoutes()
+{
+	if (fTunInterface.Length() == 0 || fTunSelfIP.Length() == 0)
+		return;
+
+	// Snapshot the peers' AllowedIPs under the lock; plan/execute without it.
+	std::vector<BString> allowed;
+	fSessionLock.Lock();
+	size_t count = fSession.Peers().Count();
+	for (size_t i = 0; i < count; i++) {
+		ts::ManagedPeer* p = fSession.Peers().PeerAt(i);
+		if (p == NULL)
+			continue;
+		for (size_t j = 0; j < p->allowedIPs.size(); j++)
+			allowed.push_back(p->allowedIPs[j]);
+	}
+	fSessionLock.Unlock();
+
+	std::vector<ts::SubnetRoute> desired;
+	ts::ComputeSubnetRoutes(allowed, desired);
+
+	std::vector<ts::SubnetRoute> toAdd, toRemove;
+	fSessionLock.Lock();
+	ts::DiffRoutes(desired, fInstalledRoutes, toAdd, toRemove);
+	fInstalledRoutes = desired;
+	fSessionLock.Unlock();
+
+	for (size_t i = 0; i < toAdd.size(); i++) {
+		const char* const add[] = {
+			"route", "add", fTunInterface.String(), "inet",
+			toAdd[i].net.String(), "gw", fTunSelfIP.String(),
+			"netmask", toAdd[i].mask.String(), NULL
+		};
+		TunDevice::RunRoute(add);
+		printf("[tailscale] + subnet route %s netmask %s via %s\n",
+			toAdd[i].net.String(), toAdd[i].mask.String(),
+			fTunInterface.String());
+	}
+	for (size_t i = 0; i < toRemove.size(); i++) {
+		const char* const del[] = {
+			"route", "delete", fTunInterface.String(), "inet",
+			toRemove[i].net.String(), "gw", fTunSelfIP.String(),
+			"netmask", toRemove[i].mask.String(), NULL
+		};
+		TunDevice::RunRoute(del);
+		printf("[tailscale] - subnet route %s\n", toRemove[i].net.String());
+	}
+}
+
+
+void
+TailscaleBackend::_TeardownRoutes()
+{
+	std::vector<ts::SubnetRoute> routes;
+	fSessionLock.Lock();
+	routes.swap(fInstalledRoutes);
+	fSessionLock.Unlock();
+	for (size_t i = 0; i < routes.size(); i++) {
+		const char* const del[] = {
+			"route", "delete", fTunInterface.String(), "inet",
+			routes[i].net.String(), "gw", fTunSelfIP.String(),
+			"netmask", routes[i].mask.String(), NULL
+		};
+		TunDevice::RunRoute(del);
+	}
 }
 
 
@@ -920,6 +1175,8 @@ TailscaleBackend::_TeardownTun()
 {
 	if (fTunInterface.Length() == 0)
 		return;
+	// Remove our subnet routes before the interface (their next hop) goes away.
+	_TeardownRoutes();
 	// Haiku's ifconfig removes an interface with "--delete <iface>", not
 	// "<iface> delete" (which just prints a usage error).
 	const char* argv[] = { "ifconfig", "--delete", fTunInterface.String(),
@@ -927,6 +1184,7 @@ TailscaleBackend::_TeardownTun()
 	TunDevice::RunIfconfig(argv, true);
 	fTunInterface = "";
 	fTunNode = "";
+	fTunSelfIP = "";
 }
 
 
@@ -1072,27 +1330,89 @@ local_ipv4(const char* host)
 void
 TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 {
-	uint16 version = ts::kControlProtocolVersion;
+	// Open the UDP socket up front so every MapRequest -- the first and every
+	// reconnect -- can advertise a real endpoint (our LAN address + magicsock
+	// port). Control relays it to peers, who disco-ping us to open a direct path.
+	if (!fMagicSock.IsOpen())
+		fMagicSock.Open(0);
 
-	// The register/poll connections are closed by the server; open a fresh one
-	// for the map long-poll.
-	if (session.Establish() != B_OK) {
+	// First map session. If it never even comes up, surface the error the way a
+	// fresh Connect expects rather than silently retrying forever.
+	bool established = false;
+	bigtime_t start = system_time();
+	_RunMapSession(session, self, &established);
+	if (fStopRequested) {
+		fMagicSock.Close();
+		BMessage done(kMsgTsFailed);
+		done.AddString("detail", "");	// stopped
+		self.SendMessage(&done);
+		return;
+	}
+	if (!established) {
+		fMagicSock.Close();
 		BMessage m(kMsgTsFailed);
-		m.AddString("detail", "could not open the network-map connection");
+		const char* detail = session.LastError();
+		m.AddString("detail", (detail != NULL && *detail != '\0')
+			? detail : "network map request failed");
 		self.SendMessage(&m);
 		return;
 	}
+
+	// The data plane is up. From here a dropped control stream must NOT tear the
+	// VPN down -- the tun, DERP relay and negotiated peer sessions keep carrying
+	// traffic while we re-establish the long-poll with backoff, until the user
+	// disconnects. (Rekey and DERP live independently of the control channel.)
+	ts::ReconnectBackoff backoff(1000000LL /* 1s */, 30000000LL /* 30s */,
+		30000000LL /* healthy >= 30s */);
+	while (!fStopRequested) {
+		bigtime_t lasted = system_time() - start;
+		bigtime_t delay = backoff.NextDelay(established, lasted);
+		printf("[tailscale] control map stream ended (up %llds) -- reconnecting "
+			"in %llds\n", (long long)(lasted / 1000000),
+			(long long)(delay / 1000000));
+		if (!_SleepInterruptible(delay))
+			break;	// stop requested during the wait
+
+		start = system_time();
+		established = false;
+		_RunMapSession(session, self, &established);
+	}
+
+	fMagicSock.Close();	// worker owns the socket; close it as the map loop ends
+
+	BMessage done(kMsgTsFailed);
+	done.AddString("detail", "");	// stopped
+	self.SendMessage(&done);
+}
+
+
+// Drive one control map long-poll to its end: (re)establish the connection, send
+// the streaming MapRequest, and apply MapResponses until the stream drops or a
+// stop is requested. On the first netmap it also brings up the data plane. Sets
+// *outEstablished once the request is accepted (HTTP 200); the return status is
+// the reason the session ended (B_OK == clean end / stopped), which the caller
+// uses to decide whether and how long to back off before reconnecting. This
+// function itself posts NO terminal kMsgTsFailed -- teardown is the caller's job.
+status_t
+TailscaleBackend::_RunMapSession(ts::ControlSession& session, BMessenger& self,
+	bool* outEstablished)
+{
+	if (outEstablished != NULL)
+		*outEstablished = false;
+
+	uint16 version = ts::kControlProtocolVersion;
+
+	// The register/poll/previous-map connections are closed by the server; open a
+	// fresh handshake + HTTP/2 connection for this map long-poll.
+	if (session.Establish() != B_OK)
+		return B_IO_ERROR;
 	// Wake the long-poll read every couple of seconds so the loop notices a
 	// Disconnect promptly (the -2/would-block return just re-polls) instead of
 	// blocking on the default 30s timeout.
 	session.SetReadTimeout(2);
 
-	// Open the UDP socket up front so we can advertise a real endpoint (our LAN
-	// address + magicsock port) in the very first MapRequest. Control relays it
-	// to peers, who then disco-ping us and open a direct path -- without an
-	// advertised endpoint a same-LAN peer has no address to reach us at.
-	if (!fMagicSock.IsOpen())
-		fMagicSock.Open(0);
+	// (Re)compute our advertised endpoint every time -- this picks up a changed
+	// LAN address after roaming. The magicsock port is stable across reconnects.
 	BString endpointsJson;
 	if (fMagicSock.IsOpen()) {
 		BString lan = local_ipv4(fControlHost.String());
@@ -1109,14 +1429,10 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 	status_t result = map.Begin(session.Http2(), fControlHost.String(), version,
 		fIdentity.NodePublic(), fIdentity.DiscoPublic(), fHostname.String(),
 		endpointsJson.String(), true /* stream */, &status);
-	if (result != B_OK || status != 200) {
-		BMessage m(kMsgTsFailed);
-		BString detail;
-		detail.SetToFormat("network map request failed (HTTP %d)", status);
-		m.AddString("detail", detail.String());
-		self.SendMessage(&m);
-		return;
-	}
+	if (result != B_OK || status != 200)
+		return B_IO_ERROR;
+	if (outEstablished != NULL)
+		*outEstablished = true;
 
 	// Stream MapResponses: the first is the full snapshot, then deltas. Apply
 	// each to the session state and post a netmap summary.
@@ -1124,18 +1440,11 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 	while (!fStopRequested) {
 		status_t r = map.ReadMessage(msg);
 		if (r == B_ENTRY_NOT_FOUND)
-			break;	// clean end of stream
+			return B_OK;	// clean end of stream -> reconnect
 		if (r == B_WOULD_BLOCK)
 			continue;	// quiet period between keepalives -- keep polling
-		if (r != B_OK) {
-			if (fStopRequested)
-				break;
-			// A read error (e.g. control drop) ends the map session.
-			BMessage m(kMsgTsFailed);
-			m.AddString("detail", "network map stream ended");
-			self.SendMessage(&m);
-			return;
-		}
+		if (r != B_OK)
+			return r;	// read error (e.g. control drop) -> caller backs off
 		fSessionLock.Lock();
 		bool ok = fSession.ApplyMapResponse(msg.String(), msg.Length());
 		fSessionLock.Unlock();
@@ -1145,8 +1454,7 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 		// On the first netmap bring up the data plane: STUN for our public
 		// endpoint, put our tailnet address on the tun, start the packet reader
 		// threads, connect DERP and the MagicDNS resolver. Gated on the tun not
-		// being up yet -- the UDP socket is already open (we opened it before
-		// the MapRequest to advertise our endpoint), so it can't be the flag.
+		// being up yet, so reconnects don't re-run it.
 		if (fTunFd < 0) {
 			_BringUpMagicSock(self);
 			BString selfip = fSession.SelfIPv4();
@@ -1162,6 +1470,10 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 			_StartMagicDns();
 		}
 
+		// Reconcile subnet-router routes against this netmap (peers advertising
+		// non-tailnet CIDRs can appear/withdraw at any update).
+		_SyncRoutes();
+
 		BMessage nm(kMsgTsNetmap);
 		nm.AddInt32("peers", fSession.PeerCount());
 		nm.AddString("selfip", fSession.SelfIPv4());
@@ -1171,12 +1483,25 @@ TailscaleBackend::_RunMap(ts::ControlSession& session, BMessenger& self)
 		nm.AddBool("up", fTunFd >= 0);
 		self.SendMessage(&nm);
 	}
+	return B_OK;	// stopped
+}
 
-	fMagicSock.Close();	// worker owns the socket; close it as the map loop ends
 
-	BMessage done(kMsgTsFailed);
-	done.AddString("detail", "");	// stopped
-	self.SendMessage(&done);
+// Sleep up to `usec`, but wake and return false the moment a stop is requested,
+// so a Disconnect during a reconnect backoff is honoured within ~200ms.
+bool
+TailscaleBackend::_SleepInterruptible(bigtime_t usec)
+{
+	const bigtime_t kSlice = 200000;	// 200ms
+	bigtime_t waited = 0;
+	while (waited < usec) {
+		if (fStopRequested)
+			return false;
+		bigtime_t chunk = (usec - waited) < kSlice ? (usec - waited) : kSlice;
+		snooze(chunk);
+		waited += chunk;
+	}
+	return !fStopRequested;
 }
 
 

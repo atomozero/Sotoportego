@@ -181,6 +181,34 @@ test_wgpeer()
 	CHECK(h.BuildInitiation(op,ppub,init)==148 && init[0]==1, "WGPeer initiation 148/type1");
 	uint8 bad[92]; memset(bad,0,92); bad[0]=2;
 	CHECK(!h.ConsumeResponse(bad,92), "WGPeer bad response reject");
+
+	// Full Noise IKpsk2 handshake, initiator <-> responder, then bidirectional
+	// transport data -- exercises the responder path (ConsumeInitiation /
+	// BuildResponse) and the swapped transport-key derivation.
+	uint8 iPriv[32],iPub[32],rPriv[32],rPub[32];
+	wg::DhGenerate(iPriv,iPub); wg::DhGenerate(rPriv,rPub);
+	WGPeer ini, res;
+	uint8 m1[148];
+	CHECK(ini.BuildInitiation(iPriv,rPub,m1)==148, "handshake: initiation built");
+	uint8 recov[32];
+	CHECK(WGPeer::RecoverInitiatorStatic(rPriv,m1,148,recov)
+		&& memcmp(recov,iPub,32)==0, "responder recovers initiator static");
+	CHECK(res.ConsumeInitiation(rPriv,m1,148), "responder consumes initiation");
+	uint8 m2[92];
+	CHECK(res.BuildResponse(m2)==92 && m2[0]==2, "responder builds type-2 response");
+	CHECK(ini.ConsumeResponse(m2,92) && ini.HasKeys(), "initiator consumes response");
+	CHECK(res.HasKeys(), "responder has transport keys");
+	uint8 ip2[20]; memset(ip2,0,20); ip2[0]=0x45; ip2[3]=0x14; ip2[19]=0x99;
+	uint8 e1[128]; size_t en1=ini.Encapsulate(ip2,20,e1);
+	uint8 dout[128]; ssize_t dd1=res.Decapsulate(e1,en1,dout);
+	CHECK(dd1==20 && memcmp(dout,ip2,20)==0, "handshake initiator->responder data");
+	uint8 e2[128]; size_t en2=res.Encapsulate(ip2,20,e2);
+	ssize_t dd2=ini.Decapsulate(e2,en2,dout);
+	CHECK(dd2==20 && memcmp(dout,ip2,20)==0, "handshake responder->initiator data");
+	// A wrong responder static must not decrypt the initiator's static.
+	uint8 wPriv[32],wPub[32]; wg::DhGenerate(wPriv,wPub);
+	CHECK(!WGPeer::RecoverInitiatorStatic(wPriv,m1,148,recov),
+		"responder rejects initiation not addressed to it");
 }
 
 

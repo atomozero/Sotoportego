@@ -10,12 +10,15 @@
 #include <OS.h>
 #include <String.h>
 
+#include <vector>
+
 #include "VPNBackend.h"
 #include "VPNStats.h"
 
 #include "MagicSock.h"
 #include "TSDerp.h"
 #include "TSIdentity.h"
+#include "TSRoutes.h"
 #include "TSSessionState.h"
 
 namespace ts { class ControlSession; }
@@ -71,12 +74,27 @@ private:
 	// summaries back to the looper. Returns when stopped or the stream ends.
 			void				_RunMap(ts::ControlSession& session,
 										BMessenger& self);
+			// Drive one map long-poll to its end (establish, stream, apply). Sets
+			// *outEstablished once the request is accepted; returns the reason the
+			// session ended. Posts no terminal failure -- the reconnect loop in
+			// _RunMap owns teardown. This is the unit the auto-reconnect wraps.
+			status_t			_RunMapSession(ts::ControlSession& session,
+										BMessenger& self, bool* outEstablished);
+			// Sleep up to `usec`, returning false early if a stop was requested,
+			// so a Disconnect during a reconnect backoff is honoured promptly.
+			bool				_SleepInterruptible(bigtime_t usec);
 			void				_StopWorker();
 
 	// Bring up a tun/N slot and assign our tailnet IPv4 (/10 CGNAT) to it, once
 	// the first netmap gives us a self address; _TeardownTun removes it.
 			void				_BringUpTun(const char* selfIPv4);
 			void				_TeardownTun();
+	// Install/remove system routes for peer subnet-router CIDRs so the kernel
+	// delivers those packets to the tun (where the peer-set demux forwards them
+	// to the right peer). Reconciled against the netmap on each update; the exit
+	// node default route is not auto-installed. Torn down on stop.
+			void				_SyncRoutes();
+			void				_TeardownRoutes();
 	// Open the magicsock UDP socket and learn our public endpoint via a DERP
 	// STUN server from the netmap. Runs on the worker thread (STUN blocks).
 			void				_BringUpMagicSock(BMessenger& self);
@@ -96,6 +114,12 @@ private:
 	// Connect the DERP relay for the netmap's home region (a fallback path when
 	// no direct route exists). Runs on the worker.
 			void				_BringUpDerp();
+	// DERP resilience (all guarded by fDerpLock): mark the relay down and free
+	// its TLS session after a drop; reconnect to the same home region; and send a
+	// periodic client keepalive so an idle relay flow isn't reaped by a firewall.
+			void				_DerpMarkDown();
+			bool				_DerpReconnect();
+			void				_DerpKeepaliveTick(bigtime_t now);
 	// Tell control our home DERP region (endpoint "127.3.3.40:<region>") plus
 	// our LAN endpoint, via a one-shot MapRequest on a second connection, so
 	// peers get a return path to us over the relay. Runs on the worker after
@@ -127,6 +151,12 @@ private:
 	// Send raw WireGuard bytes to a peer over its best path (direct or DERP).
 			void				_SendPeerBytes(ts::ManagedPeer* peer,
 									const uint8* buf, size_t len);
+			// Periodic per-peer upkeep run off the tun reader's tick: rekey a live
+			// session before it ages out (make-before-break), expire a dead one,
+			// and send a persistent keepalive on an idle session. This is what
+			// keeps a connection alive past the WireGuard REJECT_AFTER_TIME that
+			// otherwise dropped it after a few minutes.
+			void				_MaintainPeers();
 
 			VPNState			fState;
 			VPNStats			fStats;
@@ -150,9 +180,16 @@ private:
 			// The netmap-derived data-plane state, updated by the map loop.
 			ts::SessionState	fSession;
 
-			// Haiku tun slot once brought up: "tun/N" and "/dev/tun/N".
+			// Haiku tun slot once brought up: "tun/N", "/dev/tun/N" and the
+			// tailnet self address assigned to it (the on-link next hop for
+			// subnet routes).
 			BString				fTunInterface;
 			BString				fTunNode;
+			BString				fTunSelfIP;
+
+			// System subnet routes we've installed onto the tun (peer subnet
+			// routers), reconciled against the netmap; removed on teardown.
+			std::vector<ts::SubnetRoute>	fInstalledRoutes;
 
 			// The magicsock UDP socket (worker-owned) and our discovered public
 			// endpoint.
@@ -168,10 +205,15 @@ private:
 			thread_id			fDnsThread;		// -1 when none
 			BLocker				fSessionLock;
 
-			// DERP relay for the home region (fallback path).
+			// DERP relay for the home region (fallback path). fDerpLock guards the
+			// connection's up/down transitions (reconnect Close+Connect) against
+			// the senders on other threads; fDerpUp is the flag they consult.
 			ts::DerpClient		fDerp;
+			BLocker				fDerpLock;
 			bool				fDerpUp;
 			int					fDerpHomeRegion;	// -1 until connected
+			BString				fDerpHost;			// home region host, for reconnect
+			bigtime_t			fLastDerpKeepalive;	// last client keepalive sent
 };
 
 

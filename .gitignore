@@ -13,6 +13,9 @@ obj-*/
 /tests/test_runner
 /tests/test_runner_management
 /tests/test_runner_config
+# Tailscale backend host-side test runners (rebuild with `make` in that dir)
+/src/backend/tailscale/tests/ts_selftest
+/src/backend/tailscale/tests/ts_rekey_bench
 
 # Compiled resources
 *.rsrc

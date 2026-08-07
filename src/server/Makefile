@@ -53,6 +53,8 @@ SRCS = \
 	../backend/tailscale/TSPeerSet.cpp \
 	../backend/tailscale/TSSessionState.cpp \
 	../backend/tailscale/TSTls.cpp \
+	../backend/tailscale/TSBackoff.cpp \
+	../backend/tailscale/TSRoutes.cpp \
 	../common/OpenVPNConfigParser.cpp \
 	../common/WireGuardConfigParser.cpp \
 	../common/WireGuardRoutes.cpp \

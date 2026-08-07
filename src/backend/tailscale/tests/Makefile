@@ -31,13 +31,32 @@ SRCS = \
 # libcrypto: OpenSSL X25519/ChaCha used by the reused WireGuard primitives.
 LIBS = -lbe -lnetwork -lcrypto -lstdc++ -lsupc++
 
+# The rekey bench only needs the data-plane transport + its crypto; it drives
+# session aging through WGPeer's injectable test clock (no network, no waiting).
+BENCH_SRCS = \
+	ts_rekey_bench.cpp \
+	../TSBackoff.cpp \
+	../TSRoutes.cpp \
+	../WGPeer.cpp \
+	../../WireGuardCrypto.cpp \
+	../../../common/WireGuardRoutes.cpp
+
 ts_selftest: $(SRCS)
 	$(CXX) -o $@ $(SRCS) $(INCLUDES) $(LIBS)
+
+ts_rekey_bench: $(BENCH_SRCS)
+	$(CXX) -o $@ $(BENCH_SRCS) $(INCLUDES) $(LIBS)
 
 test: ts_selftest
 	./ts_selftest
 
-clean:
-	rm -f ts_selftest
+bench: ts_rekey_bench
+	./ts_rekey_bench
 
-.PHONY: test clean
+# Run both the fixture self-test and the session-lifetime bench.
+check: test bench
+
+clean:
+	rm -f ts_selftest ts_rekey_bench
+
+.PHONY: test bench check clean

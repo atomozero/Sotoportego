@@ -55,6 +55,13 @@ public:
 			size_t			Count() const { return fPeers.size(); }
 			const std::vector<ManagedPeer>&	Peers() const { return fPeers; }
 
+			// Mutable access to the i-th peer for the data plane's periodic
+			// maintenance (rekey / keepalive), which walks every peer. NULL if out
+			// of range; valid only until the next Update().
+			ManagedPeer*	PeerAt(size_t index)
+								{ return index < fPeers.size()
+									? &fPeers[index] : NULL; }
+
 			// Find a peer by its node key hex (NULL if absent). The pointer is
 			// valid only until the next Update().
 			ManagedPeer*	Find(const char* nodeKeyHex);
