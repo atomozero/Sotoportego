@@ -78,6 +78,9 @@ a Haiku package, run `./scripts/make-hpkg.sh` — it builds everything and write
 `pkgman install dist/sotoportego-*.hpkg`, or drop the `.hpkg` into
 `~/config/packages/`.
 
+Building on **32-bit Haiku (x86)**? See
+[BUILD-32bit.md](BUILD-32bit.md) — same steps, run under `setarch x86`.
+
 
 ## Run
 
