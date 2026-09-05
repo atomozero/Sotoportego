@@ -1,6 +1,6 @@
 name			sotoportego
 version			0.2.3-1
-architecture	x86_64
+architecture	@ARCH@
 summary			"Native VPN client for Haiku"
 description		"Native Haiku VPN client: a privilege-separated background \
 daemon owns the VPN lifecycle, with a Haiku-native GUI front-end and a CLI \
